@@ -1,0 +1,100 @@
+{
+  "name": "Save Restricted Content Bot v3",
+  "description": "Save Restricted Content Bot by Aublic",
+  "logo": "https://ibb.co/XZC5jyqr",
+  "keywords": ["python3", "telegram", "MusicBot", "telegram-bot", "pyrogram"],
+
+  
+  "env": {
+    "API_ID": {
+      "description": "Get this value from https://my.telegram.org",
+      "value": "",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Get this value from https://my.telegram.org",
+      "value": "",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Bot token from @BotFather",
+      "value": "",
+      "required": true
+    },
+    "MONGO_DB": {
+      "description": "MongoDB connection URL (https://cloud.mongodb.com)",
+      "value": "",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "User ID(s) to be set as bot owner(s), separated by space (e.g., 1234 5678)",
+      "value": "",
+      "required": true
+    },
+    "DB_NAME": {
+      "description": "Database name for MongoDB (default: telegram_downloader)",
+      "value": "telegram_downloader",
+      "required": false
+    },
+    "STRING": {
+      "description": "Optional session string for logged-in user sessions",
+      "value": "",
+      "required": false
+    },
+    "FORCE_SUB": {
+      "description": "Channel ID (with -100 prefix) for forced subscription",
+      "value": "-10012345567",
+      "required": true
+    },
+    "LOG_GROUP": {
+      "description": "Log channel/group ID (with -100 prefix) where the bot will send logs",
+      "value": "-1001234456",
+      "required": true
+    },
+    "MASTER_KEY": {
+      "description": "Master key used for session encryption",
+      "value": "gK8HzLfT9QpViJcYeB5wRa3DmN7P2xUq",
+      "required": false
+    },
+    "IV_KEY": {
+      "description": "Initialization vector key for decryption",
+      "value": "s7Yx5CpVmE3F",
+      "required": false
+    },
+    "YT_COOKIES": {
+      "description": "Cookies for YouTube downloads (in Netscape format)",
+      "value": "",
+      "required": false
+    },
+    "INSTA_COOKIES": {
+      "description": "Cookies for Instagram downloads (in Netscape format)",
+      "value": "",
+      "required": false
+    },
+    "FREEMIUM_LIMIT": {
+      "description": "Limit for freemium users (in MB or desired unit)",
+      "value": "0",
+      "required": false
+    },
+    "PREMIUM_LIMIT": {
+      "description": "Limit for premium users (in MB or desired unit)",
+      "value": "500",
+      "required": false
+    },
+    "ADMIN_CONTACT": {
+      "description": "type admin contact link",
+      "value": "https://t.me/Aublic",
+      "required": true
+    },
+    "JOIN_LINK": {
+      "description": "type join channel link which comes on /start",
+      "value": "https://t.me/elmlQ7Uxt84MzE1",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    { "url": "heroku/python" },
+    { "url": "https://github.com/heroku/heroku-buildpack-activestorage-preview" }
+  ],
+  "stack": "container"
+}
