@@ -34,6 +34,7 @@ async def set(_, message):
     await app.set_bot_commands([
         BotCommand("start", "🚀 Start the bot"),
         BotCommand("batch", "🫠 Extract in bulk"),
+        BotCommand("botchat", "🤖 Extract from bot chat using IDs"),
         BotCommand("login", "🔑 Get into the bot"),
         BotCommand("setbot", "🧸 Add your bot for handling files"),
         BotCommand("logout", "🚪 Get out of the bot"),
@@ -78,6 +79,8 @@ help_pages = [
         "> Log into the bot for private channel access\n\n"
         "9. **/batch**\n"
         "> Bulk extraction for posts (After login)\n\n"
+        "10. **/botchat**\n"
+        "> Extract videos from bot chat using message IDs (no link needed)\n\n"
     ),
     (
         "📝 **Bot Commands Overview (2/2)**:\n\n"
