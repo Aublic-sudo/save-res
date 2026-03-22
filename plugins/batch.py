@@ -18,7 +18,7 @@ from typing import Dict, Any, Optional
 
 Y = None if not STRING else __import__('shared_client').userbot
 Z, P, UB, UC, emp = {}, {}, {}, {}, {}
-
+BOTCHAT_STATE = {}
 ACTIVE_USERS = {}
 ACTIVE_USERS_FILE = "active_users.json"
 
@@ -498,15 +498,147 @@ async def cancel_cmd(c, m):
     else:
         await m.reply_text('No active batch process found.')
 
+@X.on_message(filters.command("botchat"))
+async def botchat_cmd(c, m):
+    uid = m.from_user.id
+
+    if await sub(c, m) == 1:
+        return
+
+    uc = await get_uclient(uid)
+    if not uc:
+        await m.reply_text("❌ Please login first using /login")
+        return
+
+    BOTCHAT_STATE[uid] = {"step": "select_bot"}
+
+    await m.reply_text("🤖 Send your bot username (the bot you want to use for upload)")
 
 @X.on_message(filters.text & filters.private & ~login_in_progress
               & ~filters.command([
                   'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set',
                   'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo',
-                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot'
+                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot', 'botchat'
               ]))
 async def text_handler(c, m):
     uid = m.from_user.id
+    # ================= BOTCHAT FLOW =================
+    # ================= BOTCHAT FLOW =================
+    if uid in BOTCHAT_STATE:
+        state = BOTCHAT_STATE[uid]
+    
+        # STEP 1: get bot username
+        if state["step"] == "select_bot":
+            bot_username = m.text.strip().replace("@", "")
+    
+            ubot = await get_ubot(uid)
+            if not ubot:
+                await m.reply_text("❌ Bot not set. Use /setbot first.")
+                return
+    
+            state["bot"] = bot_username
+            state["step"] = "limit"
+    
+            await m.reply_text("📊 Enter how many messages to fetch (example: 10)")
+            return
+    
+        # STEP 2: get limit
+        elif state["step"] == "limit":
+            if not m.text.isdigit():
+                await m.reply_text("❌ Enter a valid number")
+                return
+    
+            state["limit"] = int(m.text)
+            state["step"] = "chat"
+    
+            await m.reply_text("📥 Now send target chat username (example: Course_adminbot)")
+            return
+    
+        # STEP 3: get chat + show messages (NEW → OLD ✅)
+        elif state["step"] == "chat":
+            chat = m.text.strip()
+            state["chat"] = chat
+            state["step"] = "ids"
+    
+            uc = await get_uclient(uid)
+    
+            text = "📋 **Recent Messages (Latest First):**\n\n"
+    
+            try:
+                async for msg in uc.get_chat_history(chat, limit=state["limit"]):
+                    mtype = "None"
+    
+                    if msg.video:
+                        mtype = "VIDEO 🎥"
+                    elif msg.document:
+                        mtype = "DOCUMENT 📁"
+    
+                    caption = (
+                        msg.caption.markdown
+                        if getattr(msg.caption, "markdown", None)
+                        else "No Caption"
+                    )
+    
+                    text += f"**ID:** `{msg.id}`\n**Type:** {mtype}\n**Caption:** {caption}\n\n------\n"
+    
+            except Exception:
+                await m.reply_text("❌ Cannot access chat (join bot / check username)")
+                BOTCHAT_STATE.pop(uid, None)
+                return
+    
+            await m.reply_text(text + "\n👉 Send IDs like: `123` or `123&124`")
+            return
+    
+        # STEP 4: process IDs
+        elif state["step"] == "ids":
+            chat = state["chat"]
+    
+            try:
+                ids = [int(x.strip()) for x in m.text.split("&")]
+            except:
+                await m.reply_text("❌ Invalid format. Use: 123 or 123&124")
+                return
+    
+            ubot = await get_ubot(uid)
+            uc = await get_uclient(uid)
+    
+            status = await m.reply_text(f"🚀 Starting...\n0/{len(ids)}")
+    
+            success = 0
+    
+            for i, mid in enumerate(ids, start=1):
+                try:
+                    msg = await get_msg(ubot, uc, chat, mid, "private")
+    
+                    if msg:
+                        res = await process_msg(
+                            ubot,
+                            uc,
+                            msg,
+                            str(m.chat.id),
+                            "private",
+                            uid,
+                            chat
+                        )
+    
+                        if "Done" in res or "Sent" in res:
+                            success += 1
+    
+                        await status.edit_text(f"{i}/{len(ids)}: {res}")
+    
+                    else:
+                        await status.edit_text(f"{i}/{len(ids)}: Message not found")
+    
+                except Exception:
+                    await status.edit_text(f"{i}/{len(ids)}: Error")
+    
+                await asyncio.sleep(1)
+    
+            await m.reply_text(f"✅ Completed: {success}/{len(ids)}")
+    
+            BOTCHAT_STATE.pop(uid, None)
+            return
+    # =================================================
     if uid not in Z: return
     s = Z[uid].get('step')
 
