@@ -563,11 +563,11 @@ async def text_handler(c, m):
                     # caption
                     if msg.caption:
                         try:
-                            caption = msg.caption.markdown
+                            caption = str(msg.caption) if msg.caption else "No Caption"
                         except:
                             caption = str(msg.caption)
                     elif msg.text:
-                        caption = msg.text.markdown if hasattr(msg.text, "markdown") else msg.text
+                        caption = str(msg.text)
                     else:
                         caption = "No Caption"
         
@@ -586,20 +586,31 @@ async def text_handler(c, m):
             id_string = "&".join(all_ids)
         
             # small → chat
-            if len(id_string) < 4000:
+            full_text = text + "\n\n✅ Copy All IDs:\n" + id_string
+
+            if len(full_text) < 4000:
                 await m.reply_text(
                     text +
-                    "\n\n✅ **Copy All IDs:**\n"
-                    f"`{id_string}`\n\n"
+                    "\n\n━━━━━━━━━━━━━━━\n"
+                    "✅ **Copy All IDs:**\n"
+                    f"`{id_string}`\n"
+                    "━━━━━━━━━━━━━━━\n\n"
                     "👉 Send this OR type /all"
                 )
             else:
-                # big → txt
+                # preview only (safe)
+                await m.reply_text(
+                    text[:3000] +
+                    "\n\n⚠️ Data too large → sending full in file..."
+                )
+            
                 file_name = f"ids_{uid}.txt"
+            
                 with open(file_name, "w") as f:
-                    f.write(id_string)
-        
-                await m.reply_document(file_name, caption="📄 All IDs")
+                    f.write(full_text)
+            
+                await m.reply_document(file_name, caption="📄 Full IDs + Details")
+            
                 os.remove(file_name)
         
                 await m.reply_text("👉 Send /all to download all messages")
@@ -626,7 +637,7 @@ async def text_handler(c, m):
                     return
     
             ubot = await get_ubot(uid)
-            uc = await get_uclient(uid)
+            
     
             status = await m.reply_text(f"🚀 Starting...\n0/{len(ids)}")
     
