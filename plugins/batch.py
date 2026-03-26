@@ -498,7 +498,7 @@ async def cancel_cmd(c, m):
     else:
         await m.reply_text('No active batch process found.')
 
-@X.on_message(filters.command("chatid"))
+@X.on_message(filters.command("botchat"))
 async def botchat_cmd(c, m):
     uid = m.from_user.id
 
@@ -524,7 +524,7 @@ async def botchat_cmd(c, m):
               & ~filters.command([
                   'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set',
                   'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo',
-                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot', 'chatid'
+                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot', 'botchat'
               ]))
 async def text_handler(c, m):
     uid = m.from_user.id
@@ -609,21 +609,21 @@ async def text_handler(c, m):
         # STEP 4: process IDs
         elif state["step"] == "ids":
             chat = state["chat"]
-    
+        
             uc = await get_uclient(uid)
-
-                if m.text.strip().lower() == "/all":
-                    ids = []
-                
-                    async for msg in uc.get_chat_history(chat, limit=5000):
-                        ids.append(msg.id)
-                
-                else:
-                   try:
-                       ids = [int(x.strip()) for x in m.text.split("&")]
-                   except:
-                       await m.reply_text("❌ Invalid format. Use: 123 or 123&124 or /all")
-                       return
+        
+            if m.text.strip().lower() == "/all":
+                ids = []
+        
+                async for msg in uc.get_chat_history(chat, limit=5000):
+                    ids.append(msg.id)
+        
+            else:
+                try:
+                    ids = [int(x.strip()) for x in m.text.split("&")]
+                except:
+                    await m.reply_text("❌ Invalid format. Use: 123 or 123&124 or /all")
+                    return
     
             ubot = await get_ubot(uid)
             uc = await get_uclient(uid)
