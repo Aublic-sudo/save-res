@@ -498,7 +498,7 @@ async def cancel_cmd(c, m):
     else:
         await m.reply_text('No active batch process found.')
 
-@X.on_message(filters.command("botchat"))
+@X.on_message(filters.command("chatid"))
 async def botchat_cmd(c, m):
     uid = m.from_user.id
 
@@ -524,7 +524,7 @@ async def botchat_cmd(c, m):
               & ~filters.command([
                   'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set',
                   'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo',
-                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot', 'botchat'
+                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot', 'chatid'
               ]))
 async def text_handler(c, m):
     uid = m.from_user.id
