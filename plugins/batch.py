@@ -498,7 +498,7 @@ async def cancel_cmd(c, m):
     else:
         await m.reply_text('No active batch process found.')
 
-@X.on_message(filters.command("botchat"))
+@X.on_message(filters.command("chatid"))
 async def botchat_cmd(c, m):
     uid = m.from_user.id
 
@@ -510,15 +510,21 @@ async def botchat_cmd(c, m):
         await m.reply_text("❌ Please login first using /login")
         return
 
-    BOTCHAT_STATE[uid] = {"step": "select_bot"}
+    BOTCHAT_STATE[uid] = {"step": "chat"}
 
-    await m.reply_text("🤖 Send your bot username (the bot you want to use for upload)")
+    await m.reply_text(
+        "📥 Send chat:\n\n"
+        "• @username / bot / channel\n"
+        "• -100chatid\n"
+        "• t.me link\n\n"
+        "Then send IDs or /all"
+    )
 
 @X.on_message(filters.text & filters.private & ~login_in_progress
               & ~filters.command([
                   'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set',
                   'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo',
-                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot', 'botchat'
+                  'encrypt', 'decrypt', 'keys', 'setbot', 'rembot', 'chatid'
               ]))
 async def text_handler(c, m):
     uid = m.from_user.id
@@ -527,77 +533,98 @@ async def text_handler(c, m):
     if uid in BOTCHAT_STATE:
         state = BOTCHAT_STATE[uid]
     
-        # STEP 1: get bot username
-        if state["step"] == "select_bot":
-            bot_username = m.text.strip().replace("@", "")
-    
-            ubot = await get_ubot(uid)
-            if not ubot:
-                await m.reply_text("❌ Bot not set. Use /setbot first.")
-                return
-    
-            state["bot"] = bot_username
-            state["step"] = "limit"
-    
-            await m.reply_text("📊 Enter how many messages to fetch (example: 10)")
-            return
-    
-        # STEP 2: get limit
-        elif state["step"] == "limit":
-            if not m.text.isdigit():
-                await m.reply_text("❌ Enter a valid number")
-                return
-    
-            state["limit"] = int(m.text)
-            state["step"] = "chat"
-    
-            await m.reply_text("📥 Now send target chat username (example: Course_adminbot)")
-            return
-    
-        # STEP 3: get chat + show messages (NEW → OLD ✅)
-        elif state["step"] == "chat":
+        # STEP 1
+        if state["step"] == "chat":
             chat = m.text.strip()
             state["chat"] = chat
             state["step"] = "ids"
-    
+        
             uc = await get_uclient(uid)
-    
+        
             text = "📋 **Recent Messages (Latest First):**\n\n"
-    
+            all_ids = []
+        
             try:
-                async for msg in uc.get_chat_history(chat, limit=state["limit"]):
-                    mtype = "None"
-    
+                async for msg in uc.get_chat_history(chat, limit=100):
+                    all_ids.append(str(msg.id))
+        
+                    # type detect
                     if msg.video:
                         mtype = "VIDEO 🎥"
                     elif msg.document:
                         mtype = "DOCUMENT 📁"
-    
-                    caption = (
-                        msg.caption.markdown
-                        if getattr(msg.caption, "markdown", None)
-                        else "No Caption"
+                    elif msg.photo:
+                        mtype = "PHOTO 🖼️"
+                    elif msg.audio:
+                        mtype = "AUDIO 🎵"
+                    else:
+                        mtype = "TEXT 📝"
+        
+                    # caption
+                    if msg.caption:
+                        try:
+                            caption = msg.caption.markdown
+                        except:
+                            caption = str(msg.caption)
+                    elif msg.text:
+                        caption = msg.text.markdown if hasattr(msg.text, "markdown") else msg.text
+                    else:
+                        caption = "No Caption"
+        
+                    caption = caption.replace("\n", " ")[:100]
+        
+                    text += (
+                        f"**ID:** `{msg.id}` | {mtype}\n"
+                        f"**Caption:** {caption}\n\n------\n"
                     )
-    
-                    text += f"**ID:** `{msg.id}`\n**Type:** {mtype}\n**Caption:** {caption}\n\n------\n"
-    
+        
             except Exception:
-                await m.reply_text("❌ Cannot access chat (join bot / check username)")
+                await m.reply_text("❌ Cannot access chat")
                 BOTCHAT_STATE.pop(uid, None)
                 return
-    
-            await m.reply_text(text + "\n👉 Send IDs like: `123` or `123&124`")
+        
+            id_string = "&".join(all_ids)
+        
+            # small → chat
+            if len(id_string) < 4000:
+                await m.reply_text(
+                    text +
+                    "\n\n✅ **Copy All IDs:**\n"
+                    f"`{id_string}`\n\n"
+                    "👉 Send this OR type /all"
+                )
+            else:
+                # big → txt
+                file_name = f"ids_{uid}.txt"
+                with open(file_name, "w") as f:
+                    f.write(id_string)
+        
+                await m.reply_document(file_name, caption="📄 All IDs")
+                os.remove(file_name)
+        
+                await m.reply_text("👉 Send /all to download all messages")
+        
             return
     
         # STEP 4: process IDs
         elif state["step"] == "ids":
             chat = state["chat"]
     
-            try:
-                ids = [int(x.strip()) for x in m.text.split("&")]
-            except:
-                await m.reply_text("❌ Invalid format. Use: 123 or 123&124")
-                return
+            
+                uc = await get_uclient(uid)
+
+                if m.text.strip().lower() == "/all":
+                    ids = []
+                
+                    async for msg in uc.get_chat_history(chat, limit=5000):
+                        ids.append(msg.id)
+                
+                else:
+                   try:
+                       ids = [int(x.strip()) for x in m.text.split("&")]
+                   except:
+                       await m.reply_text("❌ Invalid format. Use: 123 or 123&124 or /all")
+                       return
     
             ubot = await get_ubot(uid)
             uc = await get_uclient(uid)
@@ -608,7 +635,9 @@ async def text_handler(c, m):
     
             for i, mid in enumerate(ids, start=1):
                 try:
-                    msg = await get_msg(ubot, uc, chat, mid, "private")
+                    chat_type = "public" if str(chat).startswith("@") else "private"
+
+                    msg = await get_msg(ubot, uc, chat, mid, chat_type)
     
                     if msg:
                         res = await process_msg(
@@ -616,7 +645,7 @@ async def text_handler(c, m):
                             uc,
                             msg,
                             str(m.chat.id),
-                            "private",
+                            chat_type,   
                             uid,
                             chat
                         )
@@ -632,7 +661,7 @@ async def text_handler(c, m):
                 except Exception:
                     await status.edit_text(f"{i}/{len(ids)}: Error")
     
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
     
             await m.reply_text(f"✅ Completed: {success}/{len(ids)}")
     
