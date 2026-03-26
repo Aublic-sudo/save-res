@@ -610,8 +610,7 @@ async def text_handler(c, m):
         elif state["step"] == "ids":
             chat = state["chat"]
     
-            
-                uc = await get_uclient(uid)
+            uc = await get_uclient(uid)
 
                 if m.text.strip().lower() == "/all":
                     ids = []
