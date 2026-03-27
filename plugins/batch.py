@@ -584,7 +584,8 @@ async def text_handler(c, m):
             chat_id, thread_id = parse_chat_input(chat_input)
             
             state["chat"] = chat_id
-            state["thread_id"] = thread_id
+            if thread_id:
+                state["thread_id"] = thread_id
             
             state["step"] = "ids"
             
@@ -707,12 +708,14 @@ async def text_handler(c, m):
                 await m.reply_text(preview)
                 
                 # Create and send file
+                topic_line = f"TOPIC ID: {thread_id}\n" if thread_id else ""
+                
                 file_content = (
                     f"CHAT: {chat_id}\n"
                     f"USER: {uid}\n"
                     f"DATE: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"TOTAL MESSAGES: {len(all_ids)}\n"
-                    + (f"TOPIC ID: {thread_id}\n" if thread_id else "")
+                    f"{topic_line}"  # ← SAHI: f-string mein daala
                     f"{'='*50}\n\n"
                     f"{text}\n\n"
                     f"ALL IDs:\n{id_string}"
@@ -729,8 +732,8 @@ async def text_handler(c, m):
                             f"📄 **Complete Message List**\n"
                             f"• Chat: `{chat_id}`\n"
                             + (f"• Topic: `{thread_id}`\n" if thread_id else "")
-                            f"• Messages: `{len(all_ids)}`\n\n"
-                            f"👉 Now send `/all` or specific IDs"
+                            + f"• Messages: `{len(all_ids)}`\n\n"
+                            + f"👉 Now send `/all` or specific IDs"
                         )
                     )
                 finally:
@@ -843,12 +846,14 @@ async def text_handler(c, m):
             total = len(ids)
             topic_info = f"\n📌 **Topic:** `{thread_id}`" if thread_id else ""
             
+            # ═══════════════════════════════════════════════════
+            # YAHAN FIX HAI - {topic_info} ko f-string ke andar daala
+            # ═══════════════════════════════════════════════════
             status_msg = await m.reply_text(
                 f"🚀 **Starting Download**\n"
                 f"• Total: `{total}` messages\n"
                 f"• Chat: `{chat}`\n"
-                f"• Type: `{chat_type}`"
-                f"{topic_info}\n\n"
+                f"• Type: `{chat_type}`{topic_info}\n\n"  # ← SAHI: {topic_info} yahan hai!
                 f"⏳ **Progress:** `0/{total}`\n"
                 f"✅ **Success:** `0`\n"
                 f"❌ **Failed:** `0`"
