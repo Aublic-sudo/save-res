@@ -5,8 +5,8 @@ opencv-python-headless
 devgagantools
 aiofiles
 # ggnpyro
-#https://www.dl.dropboxusercontent.com/scl/fi/e0fo6fcjn8kmr5r0x6wvg/myownpyro.zip?rlkey=d1znpwckss4ullz0sg7e1qjjg&st=kmbh7wdv&dl=0
-pyrogram==2.0.106
+https://www.dl.dropboxusercontent.com/scl/fi/e0fo6fcjn8kmr5r0x6wvg/myownpyro.zip?rlkey=d1znpwckss4ullz0sg7e1qjjg&st=kmbh7wdv&dl=0
+#pyrogram==2.0.106
 aiohttp
 telethon-tgcrypto
 motor
