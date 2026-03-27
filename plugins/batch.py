@@ -584,8 +584,8 @@ async def text_handler(c, m):
             chat_id, thread_id = parse_chat_input(chat_input)
             
             state["chat"] = chat_id
-            if thread_id:
-                state["thread_id"] = thread_id
+            
+            state["thread_id"] = thread_id
             
             state["step"] = "ids"
             
@@ -607,14 +607,17 @@ async def text_handler(c, m):
             
             try:
                 # Use message_thread_id if present, otherwise fetch full chat
-                history_kwargs = {
-                    "chat_id": chat_id,
-                    "limit": 100
-                }
-                if thread_id:
-                    history_kwargs["message_thread_id"] = thread_id
+                async for msg in uc.get_chat_history(chat_id, limit=500 if thread_id else 100):
+
+                    # 🔥 Topic filter (CUSTOM PYRO FIX)
+                    if thread_id:
+                        msg_topic = getattr(msg, "message_thread_id", None)
                 
-                async for msg in uc.get_chat_history(**history_kwargs):
+                        if not msg_topic:
+                            msg_topic = getattr(msg, "reply_to_top_message_id", None)
+                
+                        if msg_topic != thread_id:
+                            continue
                     msg_count += 1
                     all_ids.append(str(msg.id))
                     
@@ -783,14 +786,17 @@ async def text_handler(c, m):
                 ids = []
                 try:
                     # Build kwargs for get_chat_history with optional topic filtering
-                    history_kwargs = {
-                        "chat_id": chat,
-                        "limit": 5000
-                    }
-                    if thread_id:
-                        history_kwargs["message_thread_id"] = thread_id
+                    async for msg in uc.get_chat_history(chat, limit=10000 if thread_id else 5000):
+
+    
+                        if thread_id:
+                            msg_topic = getattr(msg, "message_thread_id", None)
                     
-                    async for msg in uc.get_chat_history(**history_kwargs):
+                            if not msg_topic:
+                                msg_topic = getattr(msg, "reply_to_top_message_id", None)
+                    
+                            if msg_topic != thread_id:
+                                continue
                         ids.append(msg.id)
                         if len(ids) % 500 == 0:
                             progress_text = f"🔍 **Fetching...** `{len(ids)}` messages found"
