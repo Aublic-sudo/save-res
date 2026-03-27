@@ -4,7 +4,6 @@
 
 import os, re, time, asyncio, json, asyncio
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.types import Message
 from pyrogram.errors import UserNotParticipant
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
@@ -39,14 +38,14 @@ def parse_chat_input(text: str):
     # Pattern 1: https://t.me/c/{chat_id}/{topic_id} (private topic link)
     topic_match = re.match(r'https?://t\.me/c/(\d+)/(\d+)', text)
     if topic_match:
-        chat_id = int(f"-100{topic_match.group(1)}")
+        chat_id = f"-100{topic_match.group(1)}"
         thread_id = int(topic_match.group(2))
         return chat_id, thread_id
     
     # Pattern 2: https://t.me/c/{chat_id} (private chat link without topic)
     private_match = re.match(r'https?://t\.me/c/(\d+)/?$', text)
     if private_match:
-        chat_id = int(f"-100{private_match.group(1)}")
+        chat_id = f"-100{private_match.group(1)}"
         return chat_id, None
     
     # Pattern 3: https://t.me/username/{message_id} or https://t.me/username
@@ -539,399 +538,28 @@ async def cancel_cmd(c, m):
 
 
 
-
-
-
-
-
-# ============ CALLBACK HANDLER ============
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# ============ CALLBACK HANDLER ============
-@X.on_callback_query(filters.regex(r"^filter_(video|doc|all|cancel|explore|download)$"))
-async def filter_callback_handler(c, callback_query):
-    uid = callback_query.from_user.id
-    data = callback_query.data
-    
-    try:
-        if is_user_active(uid):
-            await callback_query.answer("Active task! Use /stop first.", show_alert=True)
-            return
-    except:
-        pass
-    
-    if uid not in BOTCHAT_STATE:
-        await callback_query.answer("Session expired.", show_alert=True)
-        return
-    
-    state = BOTCHAT_STATE[uid]
-    
-    if data == "filter_cancel":
-        BOTCHAT_STATE.pop(uid, None)
-        await callback_query.message.edit_text("❌ Cancelled.")
-        return
-    
-    # EXPLORE - Show what's in topic
-    if data == "filter_explore":
-        await callback_query.answer("Exploring topic...", show_alert=False)
-        await explore_topic_contents(c, callback_query.message, uid, state)
-        return
-    
-    # Direct download without explore
-    if data == "filter_download":
-        await callback_query.answer("Starting download...", show_alert=False)
-        await start_topic_download(c, callback_query.message, uid)
-        return
-    
-    filter_map = {
-        "filter_video": "video",
-        "filter_doc": "document", 
-        "filter_all": None
-    }
-    
-    selected_filter = filter_map.get(data)
-    state["filter"] = selected_filter
-    
-    filter_name = "Videos" if selected_filter == "video" else "Docs" if selected_filter == "document" else "All"
-    
-    # Show options
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 EXPLORE (See what's inside)", callback_data="filter_explore")],
-        [InlineKeyboardButton(f"⬇️ DOWNLOAD ALL {filter_name.upper()}", callback_data="filter_download")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="filter_cancel")]
-    ])
-    
-    await callback_query.message.edit_text(
-        f"✅ **Selected:** {filter_name}\n\n"
-        f"📌 Topic: `{state.get('thread_id')}`\n\n"
-        f"Choose:\n"
-        f"• **EXPLORE** - See message IDs first\n"
-        f"• **DOWNLOAD** - Start immediately",
-        reply_markup=keyboard
-    )
-
-
-# ============ EXPLORE TOPIC - See what's inside ============
-async def explore_topic_contents(c, message, uid, state):
-    """Show what's inside the topic - message list"""
-    chat = state["chat"]
-    thread_id = state.get("thread_id")
-    selected_filter = state.get("filter")
-    
-    uc = await get_uclient(uid)
-    if not uc:
-        await message.reply_text("❌ Client not available")
-        return
-    
-    topic_info = f"\n📌 Topic: `{thread_id}`" if thread_id else ""
-    
-    # Quick explore - get first 100 messages with details
-    explore_msg = await message.reply_text(
-        f"🔍 **Exploring Topic**{topic_info}\n"
-        f"⏳ Fetching first 100 messages..."
-    )
-    
-    messages_list = []
-    media_count = {"video": 0, "document": 0, "photo": 0, "audio": 0, "total": 0}
-    
-    try:
-        async for msg in uc.get_chat_history(chat, limit=100):
-            # Topic check
-            if thread_id:
-                msg_topic = getattr(msg, "message_thread_id", None) or getattr(msg, "reply_to_top_message_id", None)
-                if msg_topic != thread_id:
-                    continue
-            
-            # Determine type
-            msg_type = "TEXT"
-            emoji = "💬"
-            
-            if msg.video:
-                msg_type = "VIDEO"
-                emoji = "🎬"
-                media_count["video"] += 1
-                media_count["total"] += 1
-            elif msg.document:
-                msg_type = "DOC"
-                emoji = "📄"
-                media_count["document"] += 1
-                media_count["total"] += 1
-            elif msg.photo:
-                msg_type = "PHOTO"
-                emoji = "🖼️"
-                media_count["photo"] += 1
-                media_count["total"] += 1
-            elif msg.audio:
-                msg_type = "AUDIO"
-                emoji = "🎵"
-                media_count["audio"] += 1
-                media_count["total"] += 1
-            
-            # Filter check
-            if selected_filter:
-                if selected_filter == "video" and not msg.video:
-                    continue
-                if selected_filter == "document" and not msg.document:
-                    continue
-            
-            # Store
-            content = msg.caption or msg.text or "No caption"
-            content = str(content)[:50].replace("\n", " ")
-            
-            messages_list.append({
-                "id": msg.id,
-                "type": msg_type,
-                "emoji": emoji,
-                "content": content
-            })
-            
-    except Exception as e:
-        await explore_msg.edit_text(f"❌ Error: `{str(e)[:100]}`")
-        return
-    
-    await explore_msg.delete()
-    
-    if not messages_list:
-        await message.reply_text(f"⚠️ No messages found{topic_info}")
-        return
-    
-    # Build preview
-    preview_text = f"📋 **Topic Contents**{topic_info}\n"
-    preview_text += f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    
-    all_ids = []
-    for item in messages_list[:20]:  # Show first 20
-        preview_text += f"`{item['id']}` │ {item['emoji']} {item['type']:<6} │ {item['content']}\n"
-        all_ids.append(str(item["id"]))
-    
-    if len(messages_list) > 20:
-        preview_text += f"\n... and {len(messages_list) - 20} more\n"
-    
-    preview_text += f"\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-    preview_text += f"📊 **Found:** `{media_count['video']}`🎬 `{media_count['document']}`📄 `{media_count['photo']}`🖼️ `{media_count['audio']}`🎵\n"
-    preview_text += f"📦 **Total:** `{media_count['total']}` messages\n\n"
-    
-    # Store for download
-    state["explored_ids"] = [m["id"] for m in messages_list]
-    state["media_count"] = media_count
-    
-    # Buttons
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"⬇️ DOWNLOAD ALL ({media_count['total']})", callback_data="filter_download")],
-        [InlineKeyboardButton("📄 Get IDs List", callback_data="filter_get_ids")],
-        [InlineKeyboardButton("🔁 Explore More (Next 100)", callback_data="filter_explore_more")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="filter_cancel")]
-    ])
-    
-    # Send as file if too long
-    if len(preview_text) > 4000:
-        # Truncate and send file
-        preview_text = preview_text[:3500] + "\n\n... (truncated)"
-        
-        # Also send IDs as file
-        ids_text = "\n".join([f"{m['id']} - {m['emoji']} {m['type']}" for m in messages_list])
-        
-        file_name = f"topic_{thread_id}_contents.txt"
-        with open(file_name, "w", encoding="utf-8") as f:
-            f.write(ids_text)
-        
-        await message.reply_document(file_name, caption=preview_text[:1000])
-        os.remove(file_name)
-    
-    await message.reply_text(preview_text, reply_markup=keyboard)
-
-
-# ============ DOWNLOAD TOPIC ============
-async def start_topic_download(c, message, uid):
-    """Download from topic"""
-    state = BOTCHAT_STATE.get(uid)
-    if not state:
-        return
-    
-    chat = state["chat"]
-    thread_id = state.get("thread_id")
-    selected_filter = state.get("filter")
-    
-    # Get IDs to download
-    download_ids = state.get("explored_ids", [])
-    
-    # If no explored IDs, fetch fresh
-    if not download_ids:
-        await message.reply_text("⏳ Fetching message IDs...")
-        
-        uc = await get_uclient(uid)
-        download_ids = []
-        count = 0
-        
-        try:
-            async for msg in uc.get_chat_history(chat, limit=10000):
-                if thread_id:
-                    msg_topic = getattr(msg, "message_thread_id", None) or getattr(msg, "reply_to_top_message_id", None)
-                    if msg_topic != thread_id:
-                        continue
-                
-                if selected_filter:
-                    if selected_filter == "video" and not msg.video:
-                        continue
-                    if selected_filter == "document" and not msg.document:
-                        continue
-                
-                download_ids.append(msg.id)
-                count += 1
-                
-                if count >= 5000:  # Max 5000
-                    break
-                    
-        except Exception as e:
-            await message.reply_text(f"❌ Error: `{str(e)[:100]}`")
-            return
-    
-    if not download_ids:
-        await message.reply_text("⚠️ No messages to download!")
-        BOTCHAT_STATE.pop(uid, None)
-        return
-    
-    # Start download
-    total = len(download_ids)
-    topic_info = f"\n📌 Topic: `{thread_id}`" if thread_id else ""
-    
-    start_msg = await message.reply_text(
-        f"🚀 **Starting Download**{topic_info}\n"
-        f"📦 **Total:** `{total}` messages\n"
-        f"⏳ Starting..."
-    )
-    await asyncio.sleep(2)
-    await start_msg.delete()
-    
-    # Register
-    try:
-        await add_active_batch(uid, {
-            "total": total, "current": 0, "success": 0,
-            "cancel_requested": False, "progress_message_id": None
-        })
-    except:
-        pass
-    
-    uc = await get_uclient(uid)
-    ubot = await get_ubot(uid)
-    
-    chat_type = "public" if str(chat).startswith("@") else "private"
-    destination = str(message.chat.id)
-    
-    pt = await message.reply_text(
-        f"🚀 Downloading{topic_info}\n"
-        f"📦 Total: `{total}`\n"
-        f"⏳ Progress: `0/{total}`\n"
-        f"✅ Done: `0`"
-    )
-    
-    success = 0
-    
-    for idx, mid in enumerate(download_ids, start=1):
-        try:
-            if should_cancel(uid):
-                await pt.edit_text(f"🛑 Cancelled {idx}/{total}{topic_info}\n✅ Done: {success}")
-                break
-        except:
-            pass
-        
-        try:
-            msg = await get_msg(ubot, uc, chat, mid, chat_type)
-            if not msg:
-                continue
-            
-            # Topic check
-            if thread_id:
-                msg_topic = getattr(msg, "message_thread_id", None) or getattr(msg, "reply_to_top_message_id", None)
-                if msg_topic != thread_id:
-                    continue
-            
-            # Filter
-            if selected_filter and not getattr(msg, selected_filter, None):
-                continue
-            
-            # Process
-            res = await process_msg(ubot, uc, msg, destination, chat_type, uid, chat)
-            
-            if any(x in str(res) for x in ["Done", "Sent", "Copied", "directly"]):
-                success += 1
-            
-            # Update
-            if idx % 1 == 0:
-                try:
-                    await pt.edit_text(
-                        f"🚀 Downloading{topic_info}\n"
-                        f"📦 Total: `{total}`\n"
-                        f"⏳ Progress: `{idx}/{total}`\n"
-                        f"✅ Done: `{success}`\n\n"
-                        f"🔄 Current: `{mid}`"
-                    )
-                except:
-                    pass
-            
-            await asyncio.sleep(2)
-            
-        except Exception as e:
-            continue
-    
-    # Final
-    final_text = (
-        f"✅ Complete!{topic_info}\n\n"
-        f"📦 Total: `{total}`\n"
-        f"✅ Success: `{success}`\n"
-        f"❌ Failed: `{total - success}`"
-    )
-    
-    try:
-        await pt.edit_text(final_text)
-    except:
-        await message.reply_text(final_text)
-    
-    try:
-        await remove_active_batch(uid)
-    except:
-        pass
-    
-    BOTCHAT_STATE.pop(uid, None)
-
-
-# ============ CHATID COMMAND ============
 @X.on_message(filters.command("chatid"))
 async def botchat_cmd(c, m):
     uid = m.from_user.id
 
     if await sub(c, m) == 1:
         return
-    
-    try:
-        if is_user_active(uid):
-            await m.reply_text("⚠️ Active task! Use /stop first.")
-            return
-    except:
-        pass
 
     uc = await get_uclient(uid)
     if not uc:
-        await m.reply_text("❌ Login first with /login")
+        await m.reply_text("❌ Please login first using /login")
         return
 
-    BOTCHAT_STATE[uid] = {
-        "step": "chat",
-        "chat": None,
-        "thread_id": None,
-        "filter": None,
-        "explored_ids": [],
-        "media_count": {}
-    }
+    BOTCHAT_STATE[uid] = {"step": "chat"}
 
     await m.reply_text(
-        "📥 **Send topic link:**\n\n"
-        "`https://t.me/c/2884241848/44514`\n\n"
-        "I'll show you what's inside first!"
+        "📥 Send chat:\n\n"
+        "• @username / bot / channel\n"
+        "• -100chatid\n"
+        "• t.me link (https://t.me/c/2884241848/44514)\n\n"
+        "Then send IDs or /all"
     )
 
-
-# ============ TEXT HANDLER ============
 @X.on_message(filters.text & filters.private & ~login_in_progress
               & ~filters.command([
                   'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set',
@@ -941,57 +569,387 @@ async def botchat_cmd(c, m):
 async def text_handler(c, m):
     uid = m.from_user.id
     
-    if uid in BOTCHAT_STATE:
-        pass
-    else:
-        try:
-            if is_user_active(uid) and m.text.strip().lower() not in ['cancel', '/cancel', 'stop', '/stop']:
-                await m.reply_text("⚠️ Active task! Use /stop.")
-                return
-        except:
-            pass
-    
+    # ================= BOTCHAT FLOW =================
     if uid in BOTCHAT_STATE:
         state = BOTCHAT_STATE[uid]
         
+        # ═══════════════════════════════════════════════════
+        # STEP 1: Chat Input & Message List Display
+        # ═══════════════════════════════════════════════════
         if state["step"] == "chat":
             chat_input = m.text.strip()
+            
+            # Parse input (handles @username, -100id, and t.me links including topics)
             chat_id, thread_id = parse_chat_input(chat_input)
             
-            if not thread_id:
-                # Try manual format: chat_id topic_id
-                parts = chat_input.split()
-                if len(parts) >= 2 and parts[1].isdigit():
-                    thread_id = int(parts[1])
-                else:
+            state["chat"] = chat_id
+            if thread_id:
+                state["thread_id"] = thread_id
+            
+            state["step"] = "ids"
+            
+            processing_msg = await m.reply_text(
+                "🔍 **Scanning chat history...**"
+                + (f"\n📌 Topic ID: `{thread_id}`" if thread_id else "")
+            )
+            
+            uc = await get_uclient(uid)
+            if not uc:
+                await processing_msg.edit_text("❌ **Client not available. Please /login again.**")
+                BOTCHAT_STATE.pop(uid, None)
+                return
+            
+            text = "📋 **Recent Messages (Latest 100)**\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            all_ids = []
+            msg_count = 0
+            
+            try:
+                # Use message_thread_id if present, otherwise fetch full chat
+                history_kwargs = {
+                    "chat_id": chat_id,
+                    "limit": 100
+                }
+                if thread_id:
+                    history_kwargs["message_thread_id"] = thread_id
+                
+                async for msg in uc.get_chat_history(**history_kwargs):
+                    msg_count += 1
+                    all_ids.append(str(msg.id))
+                    
+                    # Media type detection with emoji
+                    if msg.video:
+                        mtype, emoji = "VIDEO", "🎬"
+                    elif msg.document:
+                        mtype, emoji = "DOC", "📄"
+                    elif msg.photo:
+                        mtype, emoji = "PHOTO", "🖼️"
+                    elif msg.audio:
+                        mtype, emoji = "AUDIO", "🎵"
+                    elif msg.voice:
+                        mtype, emoji = "VOICE", "🎙️"
+                    elif msg.video_note:
+                        mtype, emoji = "ROUND", "🎥"
+                    elif msg.sticker:
+                        mtype, emoji = "STICKER", "😄"
+                    elif msg.animation:
+                        mtype, emoji = "GIF", "🎭"
+                    else:
+                        mtype, emoji = "TEXT", "💬"
+                    
+                    # Caption/Text extraction
+                    content = ""
+                    if msg.caption:
+                        content = str(msg.caption)[:80]
+                    elif msg.text:
+                        content = str(msg.text)[:80]
+                    else:
+                        content = "No caption"
+                    
+                    content = content.replace("\n", " ").strip()
+                    if len(content) > 80:
+                        content = content[:77] + "..."
+                    
+                    # Build entry
+                    entry = f"`{msg.id:>5}` │ {emoji} {mtype:<7} │ {content}\n"
+                    
+                    # Safety check: keep buffer for IDs section
+                    if len(text) + len(entry) < 3200:
+                        text += entry
+                    else:
+                        text += f"\n⚠️ _...and {100 - msg_count} more messages_\n"
+                        break
+                        
+            except Exception as e:
+                error_msg = (
+                    f"❌ **Cannot access chat**\n\n"
+                    f"**Error:** `{str(e)[:100]}`\n\n"
+                    f"**Possible reasons:**\n"
+                    f"• Bot is not member of the chat\n"
+                    f"• Chat doesn't exist\n"
+                    f"• You don't have permission"
+                )
+                if thread_id:
+                    error_msg += "\n• Topic doesn't exist or bot lacks access"
+                
+                await processing_msg.edit_text(error_msg)
+                BOTCHAT_STATE.pop(uid, None)
+                return
+            
+            # Delete processing message
+            await processing_msg.delete()
+            
+            # Build IDs string (truncate if too long)
+            id_string = "&".join(all_ids)
+            if len(id_string) > 1500:
+                id_string = "&".join(all_ids[:50]) + f"&...({len(all_ids)-50}more)"
+            
+            # Calculate final message size
+            topic_info = f"\n📌 **Topic ID:** `{thread_id}`" if thread_id else ""
+            
+            footer = (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 **Total:** `{msg_count}` messages"
+                f"{topic_info}\n"
+                f"📋 **IDs:** `{id_string}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💡 **Next Step:**\n"
+                f"• Send specific IDs: `123&124&125`\n"
+                f"• Or send `/all` to download everything"
+            )
+            
+            full_message = text + footer
+            
+            # Send strategy based on size
+            if len(full_message) > 4000:
+                # Strategy 1: Send preview + file
+                preview = text[:2500] + "\n\n📄 _Full list sent as document..._"
+                await m.reply_text(preview)
+                
+                # Create and send file
+                topic_line = f"TOPIC ID: {thread_id}\n" if thread_id else ""
+                
+                file_content = (
+                    f"CHAT: {chat_id}\n"
+                    f"USER: {uid}\n"
+                    f"DATE: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"TOTAL MESSAGES: {len(all_ids)}\n"
+                    f"{topic_line}"  
+                    f"{'='*50}\n\n"
+                    f"{text}\n\n"
+                    f"ALL IDs:\n{id_string}"
+                )
+                
+                file_name = f"chat_ids_{uid}_{int(time.time())}.txt"
+                try:
+                    with open(file_name, "w", encoding="utf-8") as f:
+                        f.write(file_content)
+                    
+                    await m.reply_document(
+                        file_name,
+                        caption=(
+                            f"📄 **Complete Message List**\n"
+                            f"• Chat: `{chat_id}`\n"
+                            + (f"• Topic: `{thread_id}`\n" if thread_id else "")
+                            f"• Messages: `{len(all_ids)}`\n\n"
+                            f"👉 Now send `/all` or specific IDs"
+                        )
+                    )
+                finally:
+                    if os.path.exists(file_name):
+                        os.remove(file_name)
+                
+                await m.reply_text(
+                    "🎯 **Quick Actions:**\n"
+                    "`/all` - Download all messages\n"
+                    "`cancel` - Abort operation"
+                )
+                
+            else:
+                # Strategy 2: Send as single message
+                await m.reply_text(full_message)
+            
+            return
+        
+        # ═══════════════════════════════════════════════════
+        # STEP 2: Process IDs (Download Phase)
+        # ═══════════════════════════════════════════════════
+        elif state["step"] == "ids":
+            chat = state["chat"]
+            thread_id = state.get("thread_id")
+            
+            # Handle cancel
+            if m.text.strip().lower() in ["cancel", "stop", "/cancel", "/stop"]:
+                BOTCHAT_STATE.pop(uid, None)
+                await m.reply_text("❌ **Operation cancelled.**")
+                return
+            
+            uc = await get_uclient(uid)
+            ubot = await get_ubot(uid)
+            
+            if not ubot:
+                await m.reply_text("❌ **Bot not configured.**\nUse `/setbot` first.")
+                BOTCHAT_STATE.pop(uid, None)
+                return
+            
+            # Parse IDs
+            if m.text.strip().lower() == "/all":
+                # Fetch all IDs dynamically with topic support
+                topic_info = f"\n📌 Topic: `{thread_id}`" if thread_id else ""
+                loading_msg = await m.reply_text(
+                    f"🔍 **Fetching all message IDs...**{topic_info}"
+                )
+                ids = []
+                try:
+                    # Build kwargs for get_chat_history with optional topic filtering
+                    history_kwargs = {
+                        "chat_id": chat,
+                        "limit": 5000
+                    }
+                    if thread_id:
+                        history_kwargs["message_thread_id"] = thread_id
+                    
+                    async for msg in uc.get_chat_history(**history_kwargs):
+                        ids.append(msg.id)
+                        if len(ids) % 500 == 0:
+                            progress_text = f"🔍 **Fetching...** `{len(ids)}` messages found"
+                            if thread_id:
+                                progress_text += f"\n📌 Topic: `{thread_id}`"
+                            await loading_msg.edit_text(progress_text)
+                    
+                    final_text = f"✅ **Found `{len(ids)}` messages**"
+                    if thread_id:
+                        final_text += f"\n📌 Topic: `{thread_id}`"
+                    await loading_msg.edit_text(final_text)
+                    await asyncio.sleep(1)
+                    await loading_msg.delete()
+                except Exception as e:
+                    await loading_msg.edit_text(f"❌ **Error:** `{str(e)[:100]}`")
+                    BOTCHAT_STATE.pop(uid, None)
+                    return
+            else:
+                # Parse specific IDs
+                try:
+                    ids = []
+                    for part in m.text.replace(",", "&").replace(" ", "&").split("&"):
+                        if part.strip():
+                            ids.append(int(part.strip()))
+                    if not ids:
+                        raise ValueError("No valid IDs")
+                except Exception:
                     await m.reply_text(
-                        "❌ **Need topic ID!**\n\n"
-                        "Send:\n"
-                        "`https://t.me/c/2884241848/44514`"
+                        "❌ **Invalid format!**\n\n"
+                        "**Correct formats:**\n"
+                        "• Single: `123`\n"
+                        "• Multiple: `123&124&125` or `123, 124, 125`\n"
+                        "• Range: Not supported (send individually)\n"
+                        "• All: `/all`"
                     )
                     return
             
-            state["chat"] = chat_id
-            state["thread_id"] = thread_id
+            # Validate limits
+            maxlimit = PREMIUM_LIMIT if await is_premium_user(uid) else FREEMIUM_LIMIT
+            if len(ids) > maxlimit:
+                await m.reply_text(
+                    f"⚠️ **Limit exceeded!**\n"
+                    f"• Your limit: `{maxlimit}`\n"
+                    f"• Requested: `{len(ids)}`\n\n"
+                    f"💎 **Upgrade to premium** for higher limits."
+                )
+                return
             
-            # Show initial options
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎬 Videos", callback_data="filter_video")],
-                [InlineKeyboardButton("📄 Documents", callback_data="filter_doc")],
-                [InlineKeyboardButton("📦 All Media", callback_data="filter_all")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="filter_cancel")]
-            ])
+            # Determine chat type
+            chat_type = "public" if str(chat).startswith("@") else "private"
             
-            await m.reply_text(
-                f"📌 **Topic:** `{thread_id}`\n\n"
-                f"🎯 **What do you want to explore?**",
-                reply_markup=keyboard
+            # Progress tracking
+            total = len(ids)
+            topic_info = f"\n📌 **Topic:** `{thread_id}`" if thread_id else ""
+            
+            status_msg = await m.reply_text(
+                f"🚀 **Starting Download**\n"
+                f"• Total: `{total}` messages\n"
+                f"• Chat: `{chat}`\n"
+                f"• Type: `{chat_type}`"
+                f"{topic_info}\n\n"
+                f"⏳ **Progress:** `0/{total}`\n"
+                f"✅ **Success:** `0`\n"
+                f"❌ **Failed:** `0`"
             )
             
-            state["step"] = "select_type"
+            success = 0
+            failed = 0
+            start_time = time.time()
+            
+            for idx, mid in enumerate(ids, start=1):
+                try:
+                    # Fetch message
+                    msg = await get_msg(ubot, uc, chat, mid, chat_type)
+                    
+                    if not msg:
+                        failed += 1
+                        fail_text = (
+                            f"⏳ **Progress:** `{idx}/{total}`\n"
+                            f"✅ **Success:** `{success}`\n"
+                            f"❌ **Failed:** `{failed}`\n\n"
+                            f"⚠️ Message `{mid}` not found"
+                        )
+                        if thread_id:
+                            fail_text += f"\n📌 Topic: `{thread_id}`"
+                        await status_msg.edit_text(fail_text)
+                        continue
+                    
+                    # Process message
+                    result = await process_msg(
+                        ubot, uc, msg, str(m.chat.id), 
+                        chat_type, uid, chat
+                    )
+                    
+                    if any(x in result for x in ["Done", "Sent", "Copied", "directly"]):
+                        success += 1
+                    else:
+                        failed += 1
+                    
+                    # Update progress every message or every 5 for speed
+                    if idx % 1 == 0 or idx == total:
+                        elapsed = time.time() - start_time
+                        speed = idx / elapsed if elapsed > 0 else 0
+                        eta = (total - idx) / speed if speed > 0 else 0
+                        
+                        bar_filled = int((idx / total) * 10)
+                        bar = "🟢" * bar_filled + "⚪" * (10 - bar_filled)
+                        
+                        progress_text = (
+                            f"{bar}\n\n"
+                            f"📊 **Progress:** `{idx}/{total}` ({idx/total*100:.1f}%)\n"
+                            f"✅ **Success:** `{success}`\n"
+                            f"❌ **Failed:** `{failed}`\n"
+                            f"⚡ **Speed:** `{speed:.1f}` msg/s\n"
+                            f"⏱ **ETA:** `{int(eta)}s`\n\n"
+                            f"🔄 **Current:** `{mid}` → {result[:30]}"
+                        )
+                        if thread_id:
+                            progress_text += f"\n📌 Topic: `{thread_id}`"
+                        
+                        await status_msg.edit_text(progress_text)
+                        
+                except Exception as e:
+                    failed += 1
+                    error_text = (
+                        f"⏳ **Progress:** `{idx}/{total}`\n"
+                        f"✅ **Success:** `{success}`\n"
+                        f"❌ **Failed:** `{failed}`\n\n"
+                        f"💥 **Error at `{mid}`:** `{str(e)[:50]}`"
+                    )
+                    if thread_id:
+                        error_text += f"\n📌 Topic: `{thread_id}`"
+                    await status_msg.edit_text(error_text)
+                
+                # Rate limiting
+                await asyncio.sleep(0.5)
+            
+            # Final report
+            elapsed_total = time.time() - start_time
+            final_text = (
+                f"✅ **Batch Completed!**\n\n"
+                f"📊 **Statistics:**\n"
+                f"• Total: `{total}`\n"
+                f"• ✅ Success: `{success}`\n"
+                f"• ❌ Failed: `{failed}`\n"
+                f"• ⏱ Time: `{elapsed_total:.1f}s`\n"
+                f"• ⚡ Avg Speed: `{total/elapsed_total:.1f}` msg/s"
+            )
+            if thread_id:
+                final_text += f"\n📌 **Topic:** `{thread_id}`"
+            final_text += "\n\n🏁 **All tasks finished!**"
+            
+            await status_msg.edit_text(final_text)
+            
+            BOTCHAT_STATE.pop(uid, None)
             return
     
-    # ============ BATCH/SINGLE (UNCHANGED) ============
+    # ═══════════════════════════════════════════════════
+    # BATCH / SINGLE MESSAGE FLOW (Original Logic)
+    # ═══════════════════════════════════════════════════
     if uid not in Z:
         return
         
@@ -1001,36 +959,38 @@ async def text_handler(c, m):
         L = m.text
         i, d, lt = E(L)
         if not i or not d:
-            await m.reply_text('❌ Invalid link format.')
+            await m.reply_text('❌ **Invalid link format.**\n\nCorrect format:\n`https://t.me/channel/123`')
             Z.pop(uid, None)
             return
         Z[uid].update({'step': 'count', 'cid': i, 'sid': d, 'lt': lt})
-        await m.reply_text('📊 How many messages?')
-        
-
-    # ... rest unchanged ...
+        await m.reply_text('📊 **How many messages to process?**\n(Send a number)')
 
     elif s == 'start_single':
         L = m.text
         i, d, lt = E(L)
         if not i or not d:
-            await m.reply_text('❌ Invalid link format.')
+            await m.reply_text('❌ **Invalid link format.**')
             Z.pop(uid, None)
             return
 
         Z[uid].update({'step': 'process_single', 'cid': i, 'sid': d, 'lt': lt})
         i, s_link, lt = Z[uid]['cid'], Z[uid]['sid'], Z[uid]['lt']
-        pt = await m.reply_text('🔄 Processing...')
+        pt = await m.reply_text('🔄 **Processing single message...**')
 
         ubot = UB.get(uid)
         if not ubot:
-            await pt.edit('❌ Add bot with /setbot first')
+            await pt.edit('❌ **Add bot with /setbot first**')
             Z.pop(uid, None)
             return
 
         uc = await get_uclient(uid)
         if not uc:
-            await pt.edit('❌ Cannot proceed without user client.')
+            await pt.edit('❌ **Cannot proceed without user client.**')
+            Z.pop(uid, None)
+            return
+
+        if is_user_active(uid):
+            await pt.edit('⚠️ **Active task exists. Use /stop first.**')
             Z.pop(uid, None)
             return
 
@@ -1038,65 +998,86 @@ async def text_handler(c, m):
             msg = await get_msg(ubot, uc, i, s_link, lt)
             if msg:
                 res = await process_msg(ubot, uc, msg, str(m.chat.id), lt, uid, i)
-                await pt.edit(f'✅ 1/1: {res}')
+                await pt.edit(f'✅ **1/1:** {res}')
             else:
-                await pt.edit('❌ Message not found')
+                await pt.edit('❌ **Message not found**')
         except Exception as e:
-            await pt.edit(f'💥 Error: {str(e)[:100]}')
+            await pt.edit(f'💥 **Error:** `{str(e)[:100]}`')
         finally:
             Z.pop(uid, None)
 
     elif s == 'count':
         if not m.text.isdigit():
-            await m.reply_text('❌ Enter a valid number.')
+            await m.reply_text('❌ **Enter a valid number.**')
             return
 
         count = int(m.text)
         maxlimit = PREMIUM_LIMIT if await is_premium_user(uid) else FREEMIUM_LIMIT
 
         if count > maxlimit:
-            await m.reply_text(f'⚠️ Maximum limit is {maxlimit}.')
+            await m.reply_text(
+                f'⚠️ **Maximum limit is {maxlimit}.**\n\n'
+                f'💎 Upgrade to premium for higher limits.'
+            )
             return
 
         Z[uid].update({'step': 'process', 'did': str(m.chat.id), 'num': count})
         i, s_link, n, lt = Z[uid]['cid'], Z[uid]['sid'], Z[uid]['num'], Z[uid]['lt']
         success = 0
 
-        pt = await m.reply_text('🚀 Processing batch...')
+        pt = await m.reply_text('🚀 **Processing batch...**')
         uc = await get_uclient(uid)
         ubot = UB.get(uid)
 
         if not uc or not ubot:
-            await pt.edit('❌ Missing client setup')
+            await pt.edit('❌ **Missing client setup**')
             Z.pop(uid, None)
             return
 
-        await add_active_batch(uid, {
-            "total": n, "current": 0, "success": 0,
-            "cancel_requested": False, "progress_message_id": pt.id
-        })
+        if is_user_active(uid):
+            await pt.edit('⚠️ **Active task exists**')
+            Z.pop(uid, None)
+            return
+
+        await add_active_batch(
+            uid, {
+                "total": n,
+                "current": 0,
+                "success": 0,
+                "cancel_requested": False,
+                "progress_message_id": pt.id
+            })
 
         try:
             for j in range(n):
+
                 if should_cancel(uid):
-                    await pt.edit(f'🛑 Cancelled at {j}/{n}\n✅ Success: {success}')
+                    await pt.edit(f'🛑 **Cancelled at {j}/{n}**\n✅ Success: {success}')
                     break
 
                 await update_batch_progress(uid, j, success)
+
                 mid = int(s_link) + j
 
                 try:
                     msg = await get_msg(ubot, uc, i, mid, lt)
                     if msg:
-                        res = await process_msg(ubot, uc, msg, str(m.chat.id), lt, uid, i)
+                        res = await process_msg(ubot, uc, msg, str(m.chat.id),
+                                                lt, uid, i)
                         if 'Done' in res or 'Copied' in res or 'Sent' in res:
                             success += 1
+                    else:
+                        pass
                 except Exception as e:
-                    pass
+                    try:
+                        await pt.edit(f'{j+1}/{n}: ❌ Error - {str(e)[:30]}')
+                    except:
+                        pass
 
                 await asyncio.sleep(2)
 
-            await m.reply_text(f'✅ Batch Completed!\nSuccess: {success}/{n}')
+            if j + 1 == n:
+                await m.reply_text(f'✅ **Batch Completed!**\nSuccess: {success}/{n}')
 
         finally:
             await remove_active_batch(uid)
