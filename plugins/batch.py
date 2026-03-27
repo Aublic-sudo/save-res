@@ -487,6 +487,14 @@ async def process_cmd(c, m):
 @X.on_message(filters.command(['cancel', 'stop']))
 async def cancel_cmd(c, m):
     uid = m.from_user.id
+
+    # BOTCHAT STOP
+    if uid in BOTCHAT_STATE:
+        BOTCHAT_STATE[uid]["cancel"] = True
+        await m.reply_text("🛑 Stopping current /chatid process...")
+        return
+
+    # NORMAL BATCH STOP
     if is_user_active(uid):
         if await request_batch_cancel(uid):
             await m.reply_text(
@@ -772,6 +780,16 @@ async def text_handler(c, m):
             start_time = time.time()
             
             for idx, mid in enumerate(ids, start=1):
+                if uid in BOTCHAT_STATE and BOTCHAT_STATE[uid].get("cancel", False):
+                    await status_msg.edit_text(
+                        f"🛑 **Stopped by user!**\n\n"
+                        f"📊 Progress: `{idx-1}/{total}`\n"
+                        f"✅ Success: `{success}`\n"  
+                        f"❌ Failed: `{failed}`"
+                    )
+                    BOTCHAT_STATE.pop(uid, None)
+                    return
+                 
                 try:
                     # Fetch message
                     msg = await get_msg(ubot, uc, chat, mid, chat_type)
