@@ -707,14 +707,12 @@ async def text_handler(c, m):
                 await m.reply_text(preview)
                 
                 # Create and send file
-                topic_line = f"TOPIC ID: {thread_id}\n" if thread_id else ""
-                
                 file_content = (
                     f"CHAT: {chat_id}\n"
                     f"USER: {uid}\n"
                     f"DATE: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"TOTAL MESSAGES: {len(all_ids)}\n"
-                    f"{topic_line}"  
+                    + (f"TOPIC ID: {thread_id}\n" if thread_id else "")
                     f"{'='*50}\n\n"
                     f"{text}\n\n"
                     f"ALL IDs:\n{id_string}"
