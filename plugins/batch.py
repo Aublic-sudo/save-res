@@ -27,6 +27,44 @@ ACTIVE_USERS_FILE = "active_users.json"
 def sanitize(filename):
     return re.sub(r'[<>:"/\\|?*\']', '_', filename).strip(" .")[:255]
 
+# Add this function after sanitize() function
+def parse_chat_input(text: str):
+    """
+    Parse chat input: @username, -100chatid, or t.me links
+    Returns: (chat_id, thread_id) tuple. thread_id is None for non-topic links
+    """
+    text = text.strip()
+    
+    # Pattern 1: https://t.me/c/{chat_id}/{topic_id} (private topic link)
+    topic_match = re.match(r'https?://t\.me/c/(\d+)/(\d+)', text)
+    if topic_match:
+        chat_id = f"-100{topic_match.group(1)}"
+        thread_id = int(topic_match.group(2))
+        return chat_id, thread_id
+    
+    # Pattern 2: https://t.me/c/{chat_id} (private chat link without topic)
+    private_match = re.match(r'https?://t\.me/c/(\d+)/?$', text)
+    if private_match:
+        chat_id = f"-100{private_match.group(1)}"
+        return chat_id, None
+    
+    # Pattern 3: https://t.me/username/{message_id} or https://t.me/username
+    public_match = re.match(r'https?://t\.me/([^/]+)(?:/\d+)?$', text)
+    if public_match:
+        username = public_match.group(1)
+        if username.lower() not in ['c', 'joinchat', 'addstickers', 'addemoji']:
+            return f"@{username}", None
+    
+    # Pattern 4: Direct -100chatid input
+    if re.match(r'^-100\d+$', text):
+        return text, None
+    
+    # Pattern 5: @username direct input
+    if text.startswith('@'):
+        return text, None
+    
+    # Return as-is for other cases (will fail gracefully in get_chat_history)
+    return text, None
 
 def load_active_users():
     try:
@@ -498,6 +536,8 @@ async def cancel_cmd(c, m):
     else:
         await m.reply_text('No active batch process found.')
 
+
+
 @X.on_message(filters.command("chatid"))
 async def botchat_cmd(c, m):
     uid = m.from_user.id
@@ -516,7 +556,7 @@ async def botchat_cmd(c, m):
         "📥 Send chat:\n\n"
         "• @username / bot / channel\n"
         "• -100chatid\n"
-        "• t.me link\n\n"
+        "• t.me link (https://t.me/c/2884241848/44514)\n\n"
         "Then send IDs or /all"
     )
 
@@ -537,11 +577,21 @@ async def text_handler(c, m):
         # STEP 1: Chat Input & Message List Display
         # ═══════════════════════════════════════════════════
         if state["step"] == "chat":
-            chat = m.text.strip()
-            state["chat"] = chat
+            chat_input = m.text.strip()
+            
+            # Parse input (handles @username, -100id, and t.me links including topics)
+            chat_id, thread_id = parse_chat_input(chat_input)
+            
+            state["chat"] = chat_id
+            if thread_id:
+                state["thread_id"] = thread_id
+            
             state["step"] = "ids"
             
-            processing_msg = await m.reply_text("🔍 **Scanning chat history...**")
+            processing_msg = await m.reply_text(
+                "🔍 **Scanning chat history...**"
+                + (f"\n📌 Topic ID: `{thread_id}`" if thread_id else "")
+            )
             
             uc = await get_uclient(uid)
             if not uc:
@@ -555,7 +605,15 @@ async def text_handler(c, m):
             msg_count = 0
             
             try:
-                async for msg in uc.get_chat_history(chat, limit=100):
+                # Use message_thread_id if present, otherwise fetch full chat
+                history_kwargs = {
+                    "chat_id": chat_id,
+                    "limit": 100
+                }
+                if thread_id:
+                    history_kwargs["message_thread_id"] = thread_id
+                
+                async for msg in uc.get_chat_history(**history_kwargs):
                     msg_count += 1
                     all_ids.append(str(msg.id))
                     
@@ -603,7 +661,7 @@ async def text_handler(c, m):
                         break
                         
             except Exception as e:
-                await processing_msg.edit_text(
+                error_msg = (
                     f"❌ **Cannot access chat**\n\n"
                     f"**Error:** `{str(e)[:100]}`\n\n"
                     f"**Possible reasons:**\n"
@@ -611,6 +669,10 @@ async def text_handler(c, m):
                     f"• Chat doesn't exist\n"
                     f"• You don't have permission"
                 )
+                if thread_id:
+                    error_msg += "\n• Topic doesn't exist or bot lacks access"
+                
+                await processing_msg.edit_text(error_msg)
                 BOTCHAT_STATE.pop(uid, None)
                 return
             
@@ -623,9 +685,12 @@ async def text_handler(c, m):
                 id_string = "&".join(all_ids[:50]) + f"&...({len(all_ids)-50}more)"
             
             # Calculate final message size
+            topic_info = f"\n📌 **Topic ID:** `{thread_id}`" if thread_id else ""
+            
             footer = (
                 f"\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 **Total:** `{msg_count}` messages\n"
+                f"📊 **Total:** `{msg_count}` messages"
+                f"{topic_info}\n"
                 f"📋 **IDs:** `{id_string}`\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"💡 **Next Step:**\n"
@@ -643,10 +708,11 @@ async def text_handler(c, m):
                 
                 # Create and send file
                 file_content = (
-                    f"CHAT: {chat}\n"
+                    f"CHAT: {chat_id}\n"
                     f"USER: {uid}\n"
                     f"DATE: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"TOTAL MESSAGES: {len(all_ids)}\n"
+                    + (f"TOPIC ID: {thread_id}\n" if thread_id else "")
                     f"{'='*50}\n\n"
                     f"{text}\n\n"
                     f"ALL IDs:\n{id_string}"
@@ -661,7 +727,8 @@ async def text_handler(c, m):
                         file_name,
                         caption=(
                             f"📄 **Complete Message List**\n"
-                            f"• Chat: `{chat}`\n"
+                            f"• Chat: `{chat_id}`\n"
+                            + (f"• Topic: `{thread_id}`\n" if thread_id else "")
                             f"• Messages: `{len(all_ids)}`\n\n"
                             f"👉 Now send `/all` or specific IDs"
                         )
@@ -687,6 +754,7 @@ async def text_handler(c, m):
         # ═══════════════════════════════════════════════════
         elif state["step"] == "ids":
             chat = state["chat"]
+            thread_id = state.get("thread_id")
             
             # Handle cancel
             if m.text.strip().lower() in ["cancel", "stop", "/cancel", "/stop"]:
@@ -704,17 +772,33 @@ async def text_handler(c, m):
             
             # Parse IDs
             if m.text.strip().lower() == "/all":
-                # Fetch all IDs dynamically
-                loading_msg = await m.reply_text("🔍 **Fetching all message IDs...**")
+                # Fetch all IDs dynamically with topic support
+                topic_info = f"\n📌 Topic: `{thread_id}`" if thread_id else ""
+                loading_msg = await m.reply_text(
+                    f"🔍 **Fetching all message IDs...**{topic_info}"
+                )
                 ids = []
                 try:
-                    async for msg in uc.get_chat_history(chat, limit=5000):
+                    # Build kwargs for get_chat_history with optional topic filtering
+                    history_kwargs = {
+                        "chat_id": chat,
+                        "limit": 5000
+                    }
+                    if thread_id:
+                        history_kwargs["message_thread_id"] = thread_id
+                    
+                    async for msg in uc.get_chat_history(**history_kwargs):
                         ids.append(msg.id)
                         if len(ids) % 500 == 0:
-                            await loading_msg.edit_text(
-                                f"🔍 **Fetching...** `{len(ids)}` messages found"
-                            )
-                    await loading_msg.edit_text(f"✅ **Found `{len(ids)}` messages**")
+                            progress_text = f"🔍 **Fetching...** `{len(ids)}` messages found"
+                            if thread_id:
+                                progress_text += f"\n📌 Topic: `{thread_id}`"
+                            await loading_msg.edit_text(progress_text)
+                    
+                    final_text = f"✅ **Found `{len(ids)}` messages**"
+                    if thread_id:
+                        final_text += f"\n📌 Topic: `{thread_id}`"
+                    await loading_msg.edit_text(final_text)
                     await asyncio.sleep(1)
                     await loading_msg.delete()
                 except Exception as e:
@@ -757,11 +841,14 @@ async def text_handler(c, m):
             
             # Progress tracking
             total = len(ids)
+            topic_info = f"\n📌 **Topic:** `{thread_id}`" if thread_id else ""
+            
             status_msg = await m.reply_text(
                 f"🚀 **Starting Download**\n"
                 f"• Total: `{total}` messages\n"
                 f"• Chat: `{chat}`\n"
-                f"• Type: `{chat_type}`\n\n"
+                f"• Type: `{chat_type}`"
+                f"{topic_info}\n\n"
                 f"⏳ **Progress:** `0/{total}`\n"
                 f"✅ **Success:** `0`\n"
                 f"❌ **Failed:** `0`"
@@ -778,12 +865,15 @@ async def text_handler(c, m):
                     
                     if not msg:
                         failed += 1
-                        await status_msg.edit_text(
+                        fail_text = (
                             f"⏳ **Progress:** `{idx}/{total}`\n"
                             f"✅ **Success:** `{success}`\n"
                             f"❌ **Failed:** `{failed}`\n\n"
                             f"⚠️ Message `{mid}` not found"
                         )
+                        if thread_id:
+                            fail_text += f"\n📌 Topic: `{thread_id}`"
+                        await status_msg.edit_text(fail_text)
                         continue
                     
                     # Process message
@@ -806,7 +896,7 @@ async def text_handler(c, m):
                         bar_filled = int((idx / total) * 10)
                         bar = "🟢" * bar_filled + "⚪" * (10 - bar_filled)
                         
-                        await status_msg.edit_text(
+                        progress_text = (
                             f"{bar}\n\n"
                             f"📊 **Progress:** `{idx}/{total}` ({idx/total*100:.1f}%)\n"
                             f"✅ **Success:** `{success}`\n"
@@ -815,31 +905,42 @@ async def text_handler(c, m):
                             f"⏱ **ETA:** `{int(eta)}s`\n\n"
                             f"🔄 **Current:** `{mid}` → {result[:30]}"
                         )
+                        if thread_id:
+                            progress_text += f"\n📌 Topic: `{thread_id}`"
+                        
+                        await status_msg.edit_text(progress_text)
                         
                 except Exception as e:
                     failed += 1
-                    await status_msg.edit_text(
+                    error_text = (
                         f"⏳ **Progress:** `{idx}/{total}`\n"
                         f"✅ **Success:** `{success}`\n"
                         f"❌ **Failed:** `{failed}`\n\n"
                         f"💥 **Error at `{mid}`:** `{str(e)[:50]}`"
                     )
+                    if thread_id:
+                        error_text += f"\n📌 Topic: `{thread_id}`"
+                    await status_msg.edit_text(error_text)
                 
                 # Rate limiting
                 await asyncio.sleep(0.5)
             
             # Final report
             elapsed_total = time.time() - start_time
-            await status_msg.edit_text(
+            final_text = (
                 f"✅ **Batch Completed!**\n\n"
                 f"📊 **Statistics:**\n"
                 f"• Total: `{total}`\n"
                 f"• ✅ Success: `{success}`\n"
                 f"• ❌ Failed: `{failed}`\n"
                 f"• ⏱ Time: `{elapsed_total:.1f}s`\n"
-                f"• ⚡ Avg Speed: `{total/elapsed_total:.1f}` msg/s\n\n"
-                f"🏁 **All tasks finished!**"
+                f"• ⚡ Avg Speed: `{total/elapsed_total:.1f}` msg/s"
             )
+            if thread_id:
+                final_text += f"\n📌 **Topic:** `{thread_id}`"
+            final_text += "\n\n🏁 **All tasks finished!**"
+            
+            await status_msg.edit_text(final_text)
             
             BOTCHAT_STATE.pop(uid, None)
             return
