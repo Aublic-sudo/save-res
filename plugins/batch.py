@@ -849,8 +849,7 @@ async def text_handler(c, m):
                 f"🚀 **Starting Download**\n"
                 f"• Total: `{total}` messages\n"
                 f"• Chat: `{chat}`\n"
-                f"• Type: `{chat_type}`"
-                f"{topic_info}\n\n"
+                f"• Type: `{chat_type}`{topic_info}\n\n"  
                 f"⏳ **Progress:** `0/{total}`\n"
                 f"✅ **Success:** `0`\n"
                 f"❌ **Failed:** `0`"
@@ -888,6 +887,200 @@ async def text_handler(c, m):
                         success += 1
                     else:
                         failed += 1
+                    
+                    # Update progress every message or every 5 for speed
+                    if idx % 1 == 0 or idx == total:
+                        elapsed = time.time() - start_time
+                        speed = idx / elapsed if elapsed > 0 else 0
+                        eta = (total - idx) / speed if speed > 0 else 0
+                        
+                        bar_filled = int((idx / total) * 10)
+                        bar = "🟢" * bar_filled + "⚪" * (10 - bar_filled)
+                        
+                        progress_text = (
+                            f"{bar}\n\n"
+                            f"📊 **Progress:** `{idx}/{total}` ({idx/total*100:.1f}%)\n"
+                            f"✅ **Success:** `{success}`\n"
+                            f"❌ **Failed:** `{failed}`\n"
+                            f"⚡ **Speed:** `{speed:.1f}` msg/s\n"
+                            f"⏱ **ETA:** `{int(eta)}s`\n\n"
+                            f"🔄 **Current:** `{mid}` → {result[:30]}"
+                        )
+                        if thread_id:
+                            progress_text += f"\n📌 Topic: `{thread_id}`"
+                        
+                        await status_msg.edit_text(progress_text)
+                        
+                except Exception as e:
+                    failed += 1
+                    error_text = (
+                        f"⏳ **Progress:** `{idx}/{total}`\n"
+                        f"✅ **Success:** `{success}`\n"
+                        f"❌ **Failed:** `{failed}`\n\n"
+                        f"💥 **Error at `{mid}`:** `{str(e)[:50]}`"
+                    )
+                    if thread_id:
+                        error_text += f"\n📌 Topic: `{thread_id}`"
+                    await status_msg.edit_text(error_text)
+                
+                # Rate limiting
+                await asyncio.sleep(0.5)
+            
+            # Final report
+            elapsed_total = time.time() - start_time
+            final_text = (
+                f"✅ **Batch Completed!**\n\n"
+                f"📊 **Statistics:**\n"
+                f"• Total: `{total}`\n"
+                f"• ✅ Success: `{success}`\n"
+                f"• ❌ Failed: `{failed}`\n"
+                f"• ⏱ Time: `{elapsed_total:.1f}s`\n"
+                f"• ⚡ Avg Speed: `{total/elapsed_total:.1f}` msg/s"
+            )
+            if thread_id:
+                final_text += f"\n📌 **Topic:** `{thread_id}`"
+            final_text += "\n\n🏁 **All tasks finished!**"
+            
+            await status_msg.edit_text(final_text)
+            
+            BOTCHAT_STATE.pop(uid, None)
+            return
+    
+    # ═══════════════════════════════════════════════════
+    # BATCH / SINGLE MESSAGE FLOW (Original Logic)
+    # ═══════════════════════════════════════════════════
+    if uid not in Z:
+        return
+        
+    s = Z[uid].get('step')
+
+    if s == 'start':
+        L = m.text
+        i, d, lt = E(L)
+        if not i or not d:
+            await m.reply_text('❌ **Invalid link format.**\n\nCorrect format:\n`https://t.me/channel/123`')
+            Z.pop(uid, None)
+            return
+        Z[uid].update({'step': 'count', 'cid': i, 'sid': d, 'lt': lt})
+        await m.reply_text('📊 **How many messages to process?**\n(Send a number)')
+
+    elif s == 'start_single':
+        L = m.text
+        i, d, lt = E(L)
+        if not i or not d:
+            await m.reply_text('❌ **Invalid link format.**')
+            Z.pop(uid, None)
+            return
+
+        Z[uid].update({'step': 'process_single', 'cid': i, 'sid': d, 'lt': lt})
+        i, s_link, lt = Z[uid]['cid'], Z[uid]['sid'], Z[uid]['lt']
+        pt = await m.reply_text('🔄 **Processing single message...**')
+
+        ubot = UB.get(uid)
+        if not ubot:
+            await pt.edit('❌ **Add bot with /setbot first**')
+            Z.pop(uid, None)
+            return
+
+        uc = await get_uclient(uid)
+        if not uc:
+            await pt.edit('❌ **Cannot proceed without user client.**')
+            Z.pop(uid, None)
+            return
+
+        if is_user_active(uid):
+            await pt.edit('⚠️ **Active task exists. Use /stop first.**')
+            Z.pop(uid, None)
+            return
+
+        try:
+            msg = await get_msg(ubot, uc, i, s_link, lt)
+            if msg:
+                res = await process_msg(ubot, uc, msg, str(m.chat.id), lt, uid, i)
+                await pt.edit(f'✅ **1/1:** {res}')
+            else:
+                await pt.edit('❌ **Message not found**')
+        except Exception as e:
+            await pt.edit(f'💥 **Error:** `{str(e)[:100]}`')
+        finally:
+            Z.pop(uid, None)
+
+    elif s == 'count':
+        if not m.text.isdigit():
+            await m.reply_text('❌ **Enter a valid number.**')
+            return
+
+        count = int(m.text)
+        maxlimit = PREMIUM_LIMIT if await is_premium_user(uid) else FREEMIUM_LIMIT
+
+        if count > maxlimit:
+            await m.reply_text(
+                f'⚠️ **Maximum limit is {maxlimit}.**\n\n'
+                f'💎 Upgrade to premium for higher limits.'
+            )
+            return
+
+        Z[uid].update({'step': 'process', 'did': str(m.chat.id), 'num': count})
+        i, s_link, n, lt = Z[uid]['cid'], Z[uid]['sid'], Z[uid]['num'], Z[uid]['lt']
+        success = 0
+
+        pt = await m.reply_text('🚀 **Processing batch...**')
+        uc = await get_uclient(uid)
+        ubot = UB.get(uid)
+
+        if not uc or not ubot:
+            await pt.edit('❌ **Missing client setup**')
+            Z.pop(uid, None)
+            return
+
+        if is_user_active(uid):
+            await pt.edit('⚠️ **Active task exists**')
+            Z.pop(uid, None)
+            return
+
+        await add_active_batch(
+            uid, {
+                "total": n,
+                "current": 0,
+                "success": 0,
+                "cancel_requested": False,
+                "progress_message_id": pt.id
+            })
+
+        try:
+            for j in range(n):
+
+                if should_cancel(uid):
+                    await pt.edit(f'🛑 **Cancelled at {j}/{n}**\n✅ Success: {success}')
+                    break
+
+                await update_batch_progress(uid, j, success)
+
+                mid = int(s_link) + j
+
+                try:
+                    msg = await get_msg(ubot, uc, i, mid, lt)
+                    if msg:
+                        res = await process_msg(ubot, uc, msg, str(m.chat.id),
+                                                lt, uid, i)
+                        if 'Done' in res or 'Copied' in res or 'Sent' in res:
+                            success += 1
+                    else:
+                        pass
+                except Exception as e:
+                    try:
+                        await pt.edit(f'{j+1}/{n}: ❌ Error - {str(e)[:30]}')
+                    except:
+                        pass
+
+                await asyncio.sleep(2)
+
+            if j + 1 == n:
+                await m.reply_text(f'✅ **Batch Completed!**\nSuccess: {success}/{n}')
+
+        finally:
+            await remove_active_batch(uid)
+            Z.pop(uid, None)                        failed += 1
                     
                     # Update progress every message or every 5 for speed
                     if idx % 1 == 0 or idx == total:
