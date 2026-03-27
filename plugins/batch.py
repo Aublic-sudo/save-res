@@ -38,14 +38,14 @@ def parse_chat_input(text: str):
     # Pattern 1: https://t.me/c/{chat_id}/{topic_id} (private topic link)
     topic_match = re.match(r'https?://t\.me/c/(\d+)/(\d+)', text)
     if topic_match:
-        chat_id = f"-100{topic_match.group(1)}"
+        chat_id = int(f"-100{topic_match.group(1)}")
         thread_id = int(topic_match.group(2))
         return chat_id, thread_id
     
     # Pattern 2: https://t.me/c/{chat_id} (private chat link without topic)
     private_match = re.match(r'https?://t\.me/c/(\d+)/?$', text)
     if private_match:
-        chat_id = f"-100{private_match.group(1)}"
+        chat_id = int(f"-100{private_match.group(1)}")
         return chat_id, None
     
     # Pattern 3: https://t.me/username/{message_id} or https://t.me/username
@@ -538,27 +538,6 @@ async def cancel_cmd(c, m):
 
 
 
-@X.on_message(filters.command("chatid"))
-async def botchat_cmd(c, m):
-    uid = m.from_user.id
-
-    if await sub(c, m) == 1:
-        return
-
-    uc = await get_uclient(uid)
-    if not uc:
-        await m.reply_text("❌ Please login first using /login")
-        return
-
-    BOTCHAT_STATE[uid] = {"step": "chat"}
-
-    await m.reply_text(
-        "📥 Send chat:\n\n"
-        "• @username / bot / channel\n"
-        "• -100chatid\n"
-        "• t.me link (https://t.me/c/2884241848/44514)\n\n"
-        "Then send IDs or /all"
-    )
 
 @X.on_message(filters.command("chatid"))
 async def botchat_cmd(c, m):
@@ -605,8 +584,7 @@ async def text_handler(c, m):
             chat_id, thread_id = parse_chat_input(chat_input)
             
             state["chat"] = chat_id
-            if thread_id:
-                state["thread_id"] = thread_id
+            state["thread_id"] = thread_id
             
             state["step"] = "ids"
             
