@@ -79,7 +79,7 @@ help_pages = [
         "> Log into the bot for private channel access\n\n"
         "9. **/batch**\n"
         "> Bulk extraction for posts (After login)\n\n"
-        "10. **/chatid**\n"
+        "10. **/botchat**\n"
         "> Extract videos from bot chat using message IDs (no link needed)\n\n"
     ),
     (
