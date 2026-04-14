@@ -56,8 +56,7 @@ async def start_cmd(_, message):
         "📌 **Quick start:**\n"
         "> • /login — connect your account\n"
         "> • /setbot — add your upload bot\n"
-        "> • /batch — bulk extract posts\n"
-        "> • /botchat — extract by message IDs\n\n"
+        "> • /batch — bulk extract posts\n"      
         "> Use /help for full command list.\n\n"
         "**__Powered by Rixie__**",
         reply_markup=InlineKeyboardMarkup([
@@ -79,7 +78,6 @@ async def set_commands(_, message):
     await app.set_bot_commands([
         BotCommand("start",    "🚀 Start the bot"),
         BotCommand("batch",    "🫠 Extract in bulk"),
-        BotCommand("botchat",  "🤖 Extract from bot chat using IDs"),
         BotCommand("login",    "🔑 Get into the bot"),
         BotCommand("setbot",   "🧸 Add your bot for handling files"),
         BotCommand("logout",   "🚪 Get out of the bot"),
@@ -125,8 +123,7 @@ help_pages = [
         "> Log into the bot for private channel access\n\n"
         "9. **/batch**\n"
         "> Bulk extraction for posts (after login)\n\n"
-        "10. **/botchat**\n"
-        "> Extract videos from bot chat using message IDs (no link needed)\n\n"
+       
     ),
     (
         "📝 **Bot Commands Overview (2/2)**:\n\n"
