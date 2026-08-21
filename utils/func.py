@@ -61,16 +61,312 @@ def hhmmss(seconds):
     return time.strftime('%H:%M:%S', time.gmtime(seconds))
 
 
+def parse_tg_link(L):
+    """
+    Parses any Telegram link into:
+    (chat_identifier, topic_id, message_id, link_type)
+    """
+    if not L or not isinstance(L, str):
+        return None, None, None, None
+    
+    L = L.strip()
+    
+    # 1. Private link with 3 parts: https://t.me/c/1234567890/42/105
+    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)/(\d+)', L)
+    if m:
+        return f"-100{m.group(1)}", int(m.group(2)), int(m.group(3)), 'private'
+    
+    # 2. Private link with 2 parts: https://t.me/c/1234567890/42
+    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)', L)
+    if m:
+        return f"-100{m.group(1)}", int(m.group(2)), None, 'private'
+    
+    # 3. Private link with 1 part (group only): https://t.me/c/1234567890
+    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/?', L)
+    if m:
+        return f"-100{m.group(1)}", None, None, 'private'
+    
+    # 4. Public link with 3 parts: https://t.me/username/42/105
+    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/]+)/(\d+)/(\d+)', L)
+    if m and not m.group(1).startswith(('c', 'joinchat', '+')):
+        return m.group(1), int(m.group(2)), int(m.group(3)), 'public'
+    
+    # 5. Public link with 2 parts: https://t.me/username/42
+    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/]+)/(\d+)', L)
+    if m and not m.group(1).startswith(('c', 'joinchat', '+')):
+        return m.group(1), int(m.group(2)), None, 'public'
+    
+    # 6. Public link with group name only: https://t.me/username
+    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/?#]+)', L)
+    if m and not m.group(1).startswith(('c', 'joinchat', '+')):
+        return m.group(1), None, None, 'public'
+    
+    # 7. Raw username: @username
+    if L.startswith('@'):
+        return L[1:], None, None, 'public'
+    
+    # 8. Raw chat ID (e.g. -1001234567890)
+    if L.startswith('-100') and L[4:].isdigit():
+        return L, None, None, 'private'
+    
+    return None, None, None, None
+
+
 def E(L):   
-    private_match = re.match(r'https://t\.me/c/(\d+)/(?:\d+/)?(\d+)', L)
-    public_match = re.match(r'https://t\.me/([^/]+)/(?:\d+/)?(\d+)', L)
+    chat_id, topic_or_msg, msg_id, lt = parse_tg_link(L)
+    if not chat_id:
+        return None, None, None
+    # If 3 parts were given (chat, topic, msg), return msg_id
+    if msg_id is not None:
+        return chat_id, msg_id, lt
+    # If 2 parts were given (chat, msg), return topic_or_msg
+    if topic_or_msg is not None:
+        return chat_id, topic_or_msg, lt
+    return chat_id, None, lt
+
+
+async def get_all_forum_topics(client, chat_id):
+    """
+    Fetches all forum topics for a given supergroup chat.
+    Returns a list of dicts: [{'id': topic_id, 'title': title, 'top_message': top_msg, 'total_messages': total}]
+    """
+    topics = []
+    try:
+        from pyrogram.raw.functions.channels import GetForumTopics
+        peer = await client.resolve_peer(chat_id)
+        offset_date = 0
+        offset_id = 0
+        offset_topic = 0
+        limit = 100
+        
+        while True:
+            res = await client.invoke(
+                GetForumTopics(
+                    channel=peer,
+                    offset_date=offset_date,
+                    offset_id=offset_id,
+                    offset_topic=offset_topic,
+                    limit=limit
+                )
+            )
+            raw_topics = getattr(res, 'topics', [])
+            if not raw_topics:
+                break
+            
+            for t in raw_topics:
+                topic_id = getattr(t, 'id', None)
+                if topic_id is not None:
+                    title = getattr(t, 'title', f"Topic {topic_id}")
+                    top_msg = getattr(t, 'top_message', 0)
+                    total_msgs = getattr(t, 'total_messages', 0)
+                    unread = getattr(t, 'unread_count', 0)
+                    topics.append({
+                        'id': int(topic_id),
+                        'title': str(title),
+                        'top_message': int(top_msg),
+                        'total_messages': int(total_msgs),
+                        'unread_count': int(unread)
+                    })
+            
+            if len(raw_topics) < limit:
+                break
+            
+            last = raw_topics[-1]
+            offset_topic = getattr(last, 'id', 0)
+            offset_id = getattr(last, 'top_message', 0)
+            offset_date = getattr(last, 'date', 0)
+    except Exception as e:
+        logger.error(f"Error in get_all_forum_topics for {chat_id}: {e}")
     
-    if private_match:
-        return f'-100{private_match.group(1)}', int(private_match.group(2)), 'private'
-    elif public_match:
-        return public_match.group(1), int(public_match.group(2)), 'public'
+    return topics
+
+
+async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
+    """
+    Fetches all message IDs belonging to a specific forum topic.
+    Returns message IDs ordered from oldest to newest.
+    """
+    msg_ids = []
+    try:
+        from pyrogram.raw.functions.messages import GetReplies
+        peer = await client.resolve_peer(chat_id)
+        offset_id = 0
+        limit = 100
+        
+        while True:
+            res = await client.invoke(
+                GetReplies(
+                    peer=peer,
+                    msg_id=topic_id,
+                    offset_id=offset_id,
+                    offset_date=0,
+                    add_offset=0,
+                    limit=limit,
+                    max_id=0,
+                    min_id=0,
+                    hash=0
+                )
+            )
+            raw_msgs = getattr(res, 'messages', [])
+            if not raw_msgs:
+                break
+            
+            for rm in raw_msgs:
+                mid = getattr(rm, 'id', None)
+                if mid and not getattr(rm, 'empty', False):
+                    msg_ids.append(mid)
+            
+            if len(raw_msgs) < limit:
+                break
+            
+            offset_id = raw_msgs[-1].id
+            if max_count and len(msg_ids) >= max_count:
+                msg_ids = msg_ids[:max_count]
+                break
+    except Exception as e:
+        logger.error(f"Error in GetReplies for topic {topic_id}: {e}")
     
-    return None, None, None
+    # Fallback to get_chat_history if GetReplies gave nothing
+    if not msg_ids:
+        try:
+            async for m in client.get_chat_history(chat_id, limit=max_count or 1000):
+                m_tid = getattr(m, 'message_thread_id', None) or getattr(m, 'reply_to_top_message_id', None)
+                if m_tid == topic_id or (topic_id == 1 and m_tid is None):
+                    msg_ids.append(m.id)
+        except Exception as ex:
+            logger.error(f"Fallback get_chat_history error for topic {topic_id}: {ex}")
+
+    # Reverse to make it oldest to newest
+    msg_ids.reverse()
+    return msg_ids
+
+
+async def create_forum_topic_safe(client, chat_id, title):
+    """
+    Creates a new forum topic in a supergroup if supported.
+    Returns the created topic ID or None.
+    """
+    try:
+        if hasattr(client, 'create_forum_topic'):
+            topic = await client.create_forum_topic(chat_id, title=title)
+            return getattr(topic, 'id', getattr(topic, 'message_thread_id', None))
+        
+        from pyrogram.raw.functions.channels import CreateForumTopic
+        import random
+        peer = await client.resolve_peer(chat_id)
+        random_id = random.randint(1, 2147483647)
+        res = await client.invoke(
+            CreateForumTopic(
+                channel=peer,
+                title=title,
+                random_id=random_id
+            )
+        )
+        if hasattr(res, 'updates'):
+            for u in res.updates:
+                if hasattr(u, 'id'):
+                    return u.id
+                if hasattr(u, 'message') and hasattr(u.message, 'id'):
+                    return u.message.id
+        return None
+    except Exception as e:
+        logger.error(f"Error creating forum topic '{title}' in {chat_id}: {e}")
+        return None
+
+
+async def create_cloned_supergroup(client, bot_client, title, description="", photo_file_id=None):
+    """
+    Creates a new supergroup with forum topics enabled, sets photo, and promotes bot as admin.
+    Returns (new_chat_id, invite_link)
+    """
+    try:
+        from pyrogram.raw.functions.channels import CreateChannel, ToggleForum
+        from pyrogram.types import ChatPrivileges
+        import random
+
+        # 1. Create MegaGroup (Supergroup)
+        res = await client.invoke(
+            CreateChannel(
+                title=title[:128],
+                about=(description or "")[:255],
+                megagroup=True
+            )
+        )
+        if not hasattr(res, 'chats') or not res.chats:
+            logger.error("Failed to create supergroup channel")
+            return None, None
+
+        raw_channel = res.chats[0]
+        new_chat_id = int(f"-100{raw_channel.id}")
+        logger.info(f"Created new supergroup: {new_chat_id} ('{title}')")
+
+        # 2. Wait 1 second and enable Forum Topics
+        await asyncio.sleep(1)
+        try:
+            peer = await client.resolve_peer(new_chat_id)
+            await client.invoke(
+                ToggleForum(
+                    channel=peer,
+                    enabled=True
+                )
+            )
+            logger.info(f"Enabled forum topics for {new_chat_id}")
+        except Exception as e:
+            logger.error(f"Error enabling forum topics: {e}")
+
+        # 3. Set Group Profile Photo if provided
+        if photo_file_id:
+            try:
+                photo_path = await client.download_media(photo_file_id)
+                if photo_path and os.path.exists(photo_path):
+                    await client.set_chat_photo(new_chat_id, photo=photo_path)
+                    try:
+                        os.remove(photo_path)
+                    except Exception:
+                        pass
+                    logger.info(f"Set profile photo for {new_chat_id}")
+            except Exception as e:
+                logger.error(f"Error setting group photo: {e}")
+
+        # 4. Add custom bot and promote as admin
+        if bot_client:
+            try:
+                bot_me = await bot_client.get_me()
+                try:
+                    await client.add_chat_members(new_chat_id, bot_me.id)
+                except Exception:
+                    pass
+                
+                await client.promote_chat_member(
+                    new_chat_id,
+                    bot_me.id,
+                    privileges=ChatPrivileges(
+                        can_manage_chat=True,
+                        can_delete_messages=True,
+                        can_manage_video_chats=True,
+                        can_restrict_members=True,
+                        can_promote_members=True,
+                        can_change_info=True,
+                        can_invite_users=True,
+                        can_pin_messages=True,
+                        can_manage_topics=True
+                    )
+                )
+                logger.info(f"Added and promoted bot {bot_me.id} in {new_chat_id}")
+            except Exception as e:
+                logger.error(f"Error adding bot as admin to {new_chat_id}: {e}")
+
+        # 5. Export invite link
+        invite_link = None
+        try:
+            invite_link = await client.export_chat_invite_link(new_chat_id)
+        except Exception:
+            pass
+
+        return new_chat_id, invite_link
+    except Exception as e:
+        logger.error(f"Error in create_cloned_supergroup: {e}")
+        return None, None
 
 
 def get_display_name(user):
