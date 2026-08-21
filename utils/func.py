@@ -386,6 +386,24 @@ def sanitize_filename(filename):
     return re.sub(r'[<>:"/\\|?*]', '_', filename)
 
 
+def cleanup_stray_temp_files():
+    """
+    Cleans up any stray media or temp files in root directory to preserve Render/cloud storage.
+    """
+    try:
+        now = time.time()
+        for f in os.listdir("."):
+            if f.endswith(('.mp4', '.mkv', '.mp3', '.jpg', '.jpeg', '.pdf', '.bin', '.part', '.tmp', '.webp')) and not f.startswith(('settings', 'thumb')):
+                try:
+                    # If file is older than 3 minutes, remove it
+                    if now - os.path.getmtime(f) > 180:
+                        os.remove(f)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Error in cleanup_stray_temp_files: {e}")
+
+
 def get_dummy_filename(info):
     file_type = info.get("type", "file")
     extension = {
