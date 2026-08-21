@@ -1,10 +1,7 @@
 
-# Copyright (c) 2025 devgagan : https://github.com/devgaganin.  
-# Licensed under the GNU General Public License v3.0.  
-# See LICENSE file in the repository root for full license text.
-
 import asyncio
-from shared_client import start_client
+from shared_client import start_client, app, client, userbot
+from pyrogram import idle
 import importlib
 import os
 import sys
@@ -22,8 +19,23 @@ async def load_and_run_plugins():
 
 async def main():
     await load_and_run_plugins()
-    while True:
-        await asyncio.sleep(1)  
+    print("Bot is up and running!")
+    await idle()
+    print("Shutting down clients gracefully...")
+    try:
+        await app.stop()
+    except Exception:
+        pass
+    try:
+        await client.disconnect()
+    except Exception:
+        pass
+    if userbot:
+        try:
+            if getattr(userbot, 'is_connected', False):
+                await userbot.stop()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
@@ -33,10 +45,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Shutting down...")
     except Exception as e:
-        print(e)
+        print(f"Error: {e}")
         sys.exit(1)
-    finally:
-        try:
-            loop.close()
-        except Exception:
-            pass
