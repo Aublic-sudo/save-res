@@ -33,6 +33,8 @@ async def set(_, message):
      
     await app.set_bot_commands([
         BotCommand("start", "🚀 Start the bot"),
+        BotCommand("clone", "🚀 Smart Topic & Group Cloner"),
+        BotCommand("topic", "📑 Clone forum topics / groups"),
         BotCommand("batch", "🫠 Extract in bulk"),
         BotCommand("login", "🔑 Get into the bot"),
         BotCommand("setbot", "🧸 Add your bot for handling files"),
@@ -76,7 +78,9 @@ help_pages = [
         "> Download audio (Not available in v3 if you are using)\n\n"
         "8. **/login**\n"
         "> Log into the bot for private channel access\n\n"
-        "9. **/batch**\n"
+        "9. **/clone** or **/topic**\n"
+        "> 🚀 Smart Group & Topic Cloner (Auto-detects all topics & non-contiguous IDs)\n\n"
+        "10. **/batch**\n"
         "> Bulk extraction for posts (After login)\n\n"
     ),
     (

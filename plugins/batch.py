@@ -199,7 +199,7 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None):
         print(f'Direct send error: {e}')
         return False
 
-async def process_msg(c, u, m, d, lt, uid, i):
+async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_override=None):
     try:
         cfg_chat = await get_user_data_key(d, 'chat_id', None)
         tcid = d
@@ -211,6 +211,11 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 rtmid = int(parts[1]) if len(parts) > 1 else None
             else:
                 tcid = int(cfg_chat)
+        
+        if target_override is not None:
+            tcid = target_override
+        if topic_override is not None:
+            rtmid = topic_override
         
         if m.media:
             orig_text = m.caption.markdown if m.caption else ''
@@ -379,7 +384,8 @@ async def cancel_cmd(c, m):
 
 @X.on_message(filters.text & filters.private & ~login_in_progress & ~filters.command([
     'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set', 
-    'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo', 'encrypt', 'decrypt', 'keys', 'setbot', 'rembot']))
+    'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo', 'encrypt', 'decrypt', 'keys', 'setbot', 'rembot',
+    'clone', 'topic', 'clonegroup', 'groupclone']))
 async def text_handler(c, m):
     uid = m.from_user.id
     if uid not in Z: return
