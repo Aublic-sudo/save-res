@@ -11,11 +11,12 @@ from typing import Dict, Any, Optional, List
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import FloodWait
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
 from utils.func import (
     get_user_data, get_user_data_key, is_premium_user,
     parse_tg_link, get_all_forum_topics, get_topic_messages_list,
-    create_forum_topic_safe, create_cloned_supergroup, E
+    create_forum_topic_safe, create_cloned_supergroup, cleanup_stray_temp_files, E
 )
 from shared_client import app as X
 from plugins.start import subscribe as sub
@@ -500,6 +501,23 @@ async def run_single_topic_cloning(
                         failed += 1
                 else:
                     failed += 1
+            except FloodWait as e:
+                logger.warning(f"FloodWait hit: sleeping for {e.value + 1}s")
+                await asyncio.sleep(e.value + 1)
+                try:
+                    msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
+                    if msg:
+                        res = await process_msg(
+                            ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
+                            target_override=target_override,
+                            topic_override=topic_override
+                        )
+                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                            success += 1
+                        else:
+                            failed += 1
+                except Exception:
+                    failed += 1
             except Exception as e:
                 failed += 1
                 logger.error(f"Error cloning msg {mid} in topic {topic_id}: {e}")
@@ -688,6 +706,23 @@ async def run_full_group_cloning(
                             total_failed += 1
                     else:
                         total_failed += 1
+                except FloodWait as e:
+                    logger.warning(f"FloodWait hit in group clone: sleeping for {e.value + 1}s")
+                    await asyncio.sleep(e.value + 1)
+                    try:
+                        msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
+                        if msg:
+                            res = await process_msg(
+                                ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
+                                target_override=base_target_chat,
+                                topic_override=dest_topic_id
+                            )
+                            if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                                total_cloned += 1
+                            else:
+                                total_failed += 1
+                    except Exception:
+                        total_failed += 1
                 except Exception as e:
                     total_failed += 1
                     logger.error(f"Error cloning msg {mid} in topic {t_id}: {e}")
@@ -807,6 +842,23 @@ async def run_normal_channel_cloning(
                     else:
                         failed += 1
                 else:
+                    failed += 1
+            except FloodWait as e:
+                logger.warning(f"FloodWait hit in channel clone: sleeping for {e.value + 1}s")
+                await asyncio.sleep(e.value + 1)
+                try:
+                    msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
+                    if msg:
+                        res = await process_msg(
+                            ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
+                            target_override=target_override,
+                            topic_override=topic_override
+                        )
+                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                            success += 1
+                        else:
+                            failed += 1
+                except Exception:
                     failed += 1
             except Exception as e:
                 failed += 1

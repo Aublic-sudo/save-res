@@ -200,6 +200,9 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None):
         return False
 
 async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_override=None):
+    f = None
+    th = None
+    p = None
     try:
         cfg_chat = await get_user_data_key(d, 'chat_id', None)
         tcid = d
@@ -232,31 +235,29 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
 
             c_name = f"{time.time()}"
             if m.video:
-                file_name = m.video.file_name
-                if not file_name:
-                    file_name = f"{time.time()}.mp4"
-                    c_name = sanitize(file_name)
+                file_name = m.video.file_name or f"{time.time()}.mp4"
+                c_name = sanitize(file_name)
             elif m.audio:
-                file_name = m.audio.file_name
-                if not file_name:
-                    file_name = f"{time.time()}.mp3"
-                    c_name = sanitize(file_name)
+                file_name = m.audio.file_name or f"{time.time()}.mp3"
+                c_name = sanitize(file_name)
             elif m.document:
-                file_name = m.document.file_name
-                if not file_name:
-                    file_name = f"{time.time()}"
-                    c_name = sanitize(file_name)
+                file_name = m.document.file_name or f"{time.time()}"
+                c_name = sanitize(file_name)
             elif m.photo:
                 file_name = f"{time.time()}.jpg"
                 c_name = sanitize(file_name)
     
             f = await u.download_media(m, file_name=c_name, progress=prog, progress_args=(c, d, p.id, st))
             
-            if not f:
-                await c.edit_message_text(d, p.id, 'Failed.')
+            if not f or not os.path.exists(f):
+                if p:
+                    try: await c.edit_message_text(d, p.id, 'Failed.')
+                    except: pass
                 return 'Failed.'
             
-            await c.edit_message_text(d, p.id, 'Renaming...')
+            if p:
+                try: await c.edit_message_text(d, p.id, 'Renaming...')
+                except: pass
             if (
                 (m.video and m.video.file_name) or
                 (m.audio and m.audio.file_name) or
@@ -265,15 +266,20 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 f = await rename_file(f, d, p)
             
             fsize = os.path.getsize(f) / (1024 * 1024 * 1024)
-            th = thumbnail(d)
+            user_thumb = thumbnail(d)
+            th = user_thumb
             
             if fsize > 2 and Y:
                 st = time.time()
-                await c.edit_message_text(d, p.id, 'File is larger than 2GB. Using alternative method...')
+                if p:
+                    try: await c.edit_message_text(d, p.id, 'File is larger than 2GB. Using alternative method...')
+                    except: pass
                 await upd_dlg(Y)
                 mtd = await get_video_metadata(f)
                 dur, h, w = mtd['duration'], mtd['width'], mtd['height']
-                th = await screenshot(f, dur, d)
+                gen_th = await screenshot(f, dur, d)
+                if gen_th != user_thumb:
+                    th = gen_th
                 
                 send_funcs = {'video': Y.send_video, 'video_note': Y.send_video_note, 
                             'voice': Y.send_voice, 'audio': Y.send_audio, 
@@ -294,19 +300,23 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                                                 reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
                 
                 await c.copy_message(d, LOG_GROUP, sent.id)
-                os.remove(f)
-                await c.delete_messages(d, p.id)
-                
+                if p:
+                    try: await c.delete_messages(d, p.id)
+                    except: pass
                 return 'Done (Large file).'
             
-            await c.edit_message_text(d, p.id, 'Uploading...')
+            if p:
+                try: await c.edit_message_text(d, p.id, 'Uploading...')
+                except: pass
             st = time.time()
 
             try:
                 if m.video or os.path.splitext(f)[1].lower() == '.mp4':
                     mtd = await get_video_metadata(f)
                     dur, h, w = mtd['duration'], mtd['width'], mtd['height']
-                    th = await screenshot(f, dur, d)
+                    gen_th = await screenshot(f, dur, d)
+                    if gen_th != user_thumb:
+                        th = gen_th
                     await c.send_video(tcid, video=f, caption=ft if m.caption else None, 
                                     thumb=th, width=w, height=h, duration=dur, 
                                     progress=prog, progress_args=(c, d, p.id, st), 
@@ -332,13 +342,14 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                                         progress=prog, progress_args=(c, d, p.id, st), 
                                         reply_to_message_id=rtmid)
             except Exception as e:
-                await c.edit_message_text(d, p.id, f'Upload failed: {str(e)[:30]}')
-                if os.path.exists(f): os.remove(f)
-                return 'Failed.'
+                if p:
+                    try: await c.edit_message_text(d, p.id, f'Upload failed: {str(e)[:30]}')
+                    except: pass
+                return f'Failed: {str(e)[:30]}'
             
-            os.remove(f)
-            await c.delete_messages(d, p.id)
-            
+            if p:
+                try: await c.delete_messages(d, p.id)
+                except: pass
             return 'Done.'
             
         elif m.text:
@@ -346,6 +357,21 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             return 'Sent.'
     except Exception as e:
         return f'Error: {str(e)[:50]}'
+    finally:
+        # GUARANTEED CLEANUP OF LOCAL FILE AND GENERATED THUMBNAIL
+        if f and os.path.exists(f):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        user_thumb = thumbnail(d)
+        if th and th != user_thumb and os.path.exists(th):
+            try:
+                os.remove(th)
+            except Exception:
+                pass
+        import gc
+        gc.collect()
 
 @X.on_message(filters.command(['batch', 'single']))
 async def process_cmd(c, m):
