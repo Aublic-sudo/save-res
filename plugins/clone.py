@@ -23,7 +23,7 @@ from plugins.start import subscribe as sub
 from plugins.batch import (
     get_ubot, get_uclient, get_msg, process_msg,
     is_user_active, add_active_batch, update_batch_progress,
-    should_cancel, remove_active_batch, upd_dlg, UB, UC
+    should_cancel, remove_active_batch, upd_dlg, UB, UC, Z
 )
 from utils.custom_filters import login_in_progress
 
@@ -34,33 +34,173 @@ CLONE_STATE: Dict[int, Dict[str, Any]] = {}
 
 
 async def resolve_tg_chat(client, chat_identifier):
-    """Resolves chat_identifier to Chat object and resolved_id."""
+    """Resolves chat_identifier to Chat object and resolved_id with deep fallback search."""
+    target_raw_id = str(chat_identifier).replace('-100', '') if str(chat_identifier).startswith('-100') else str(chat_identifier)
+    
+    # 1. Direct get_chat
     try:
-        if str(chat_identifier).isdigit():
-            c_id = int(chat_identifier) if str(chat_identifier).startswith('-100') else int(f"-100{chat_identifier}")
-        elif isinstance(chat_identifier, str) and chat_identifier.startswith('-100'):
-            c_id = int(chat_identifier)
-        else:
-            c_id = chat_identifier
-        
+        c_id = int(f"-100{target_raw_id}") if target_raw_id.isdigit() else chat_identifier
         chat = await client.get_chat(c_id)
         return chat, chat.id
     except Exception:
-        try:
-            peer = await client.resolve_peer(chat_identifier)
-            if hasattr(peer, 'channel_id'):
-                res_id = int(f"-100{peer.channel_id}")
-            elif hasattr(peer, 'chat_id'):
-                res_id = int(f"-{peer.chat_id}")
-            elif hasattr(peer, 'user_id'):
-                res_id = peer.user_id
-            else:
-                res_id = chat_identifier
-            chat = await client.get_chat(res_id)
-            return chat, res_id
-        except Exception as e:
-            logger.error(f"Error resolving chat {chat_identifier}: {e}")
-            return None, chat_identifier
+        pass
+
+    # 2. Resolve peer
+    try:
+        peer = await client.resolve_peer(chat_identifier)
+        if hasattr(peer, 'channel_id'):
+            res_id = int(f"-100{peer.channel_id}")
+        elif hasattr(peer, 'chat_id'):
+            res_id = int(f"-{peer.chat_id}")
+        elif hasattr(peer, 'user_id'):
+            res_id = peer.user_id
+        else:
+            res_id = chat_identifier
+        chat = await client.get_chat(res_id)
+        return chat, res_id
+    except Exception:
+        pass
+
+    # 3. Deep search in user's dialogs
+    try:
+        async for dialog in client.get_dialogs(limit=300):
+            d_chat = dialog.chat
+            if str(d_chat.id).replace('-100', '') == target_raw_id or getattr(d_chat, 'username', '') == str(chat_identifier).lstrip('@'):
+                return d_chat, d_chat.id
+    except Exception as e:
+        logger.error(f"Error searching dialogs for {chat_identifier}: {e}")
+
+    # 4. Fallback proxy chat object if numeric ID is valid
+    if target_raw_id.isdigit():
+        c_id = int(f"-100{target_raw_id}")
+        class ProxyChat:
+            def __init__(self, cid):
+                self.id = cid
+                self.title = f"Group ({cid})"
+                self.description = ""
+                self.photo = None
+                self.is_forum = True
+        return ProxyChat(c_id), c_id
+
+    return None, chat_identifier
+
+
+async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Message):
+    """Processes any Telegram link into Topic / Group Clone flow."""
+    uid = m.from_user.id
+    chat_id, topic_id, msg_id, link_type = parse_tg_link(link_text)
+
+    if not chat_id:
+        await status_msg.edit_text("❌ Invalid Telegram link format. Please provide a valid channel, group, or topic link.")
+        CLONE_STATE.pop(uid, None)
+        return
+
+    uc = await get_uclient(uid)
+    if not uc:
+        await status_msg.edit_text("⚠️ User client session error. Please use `/login` first.")
+        CLONE_STATE.pop(uid, None)
+        return
+
+    await status_msg.edit_text("⏳ Inspecting chat and discovering forum topics...")
+    await upd_dlg(uc)
+
+    chat_obj, resolved_id = await resolve_tg_chat(uc, chat_id)
+    if not chat_obj:
+        await status_msg.edit_text(
+            "❌ Could not access this chat.\n"
+            "Please make sure your logged-in account has joined this group/channel!"
+        )
+        CLONE_STATE.pop(uid, None)
+        return
+
+    chat_title = getattr(chat_obj, 'title', str(resolved_id))
+    chat_desc = getattr(chat_obj, 'description', '')
+    chat_photo = getattr(chat_obj.photo, 'big_file_id', None) if getattr(chat_obj, 'photo', None) else None
+    is_forum = getattr(chat_obj, 'is_forum', True)
+
+    CLONE_STATE[uid] = {
+        'chat_id': resolved_id,
+        'chat_title': chat_title,
+        'chat_desc': chat_desc,
+        'chat_photo': chat_photo,
+        'link_type': link_type,
+        'is_forum': is_forum
+    }
+    state = CLONE_STATE[uid]
+
+    # Case 1: Specific Topic Link provided (e.g. .../49012 or .../49012/100)
+    if topic_id is not None:
+        state['topic_id'] = topic_id
+        state['step'] = 'confirm_single_topic'
+
+        await status_msg.edit_text(f"⏳ Fetching messages inside Topic `{topic_id}`...")
+        msg_ids = await get_topic_messages_list(uc, resolved_id, topic_id)
+        state['msg_ids'] = msg_ids
+        state['topic_title'] = f"Topic #{topic_id}"
+
+        btn = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("▶️ Start Cloning Topic", callback_data="clone_start_topic"),
+                InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
+            ]
+        ])
+
+        await status_msg.edit_text(
+            f"📌 **Forum Topic Detected!**\n\n"
+            f"📁 **Group:** {chat_title}\n"
+            f"🏷️ **Topic ID:** `{topic_id}`\n"
+            f"📊 **Messages Found:** `{len(msg_ids)}`\n\n"
+            f"Ready to clone all contents belonging to this topic?",
+            reply_markup=btn
+        )
+        return
+
+    # Case 2: Full Forum Supergroup Link provided (e.g. https://t.me/c/2884241848)
+    topics = await get_all_forum_topics(uc, resolved_id)
+    if topics:
+        state['topics'] = topics
+        state['step'] = 'select_topic_mode'
+
+        topics_list_text = "\n".join(
+            [f"• 🔹 **{t['title']}** (`ID: {t['id']}`) - ~{t['total_messages']} msgs" for t in topics[:15]]
+        )
+        if len(topics) > 15:
+            topics_list_text += f"\n• ... and {len(topics) - 15} more topics"
+
+        btn = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"🚀 Clone All Topics ({len(topics)})", callback_data="clone_choose_destination"),
+            ],
+            [
+                InlineKeyboardButton("🎯 Choose Specific Topic", callback_data="clone_pick_topic"),
+                InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
+            ]
+        ])
+
+        await status_msg.edit_text(
+            f"📁 **Forum Supergroup Detected!**\n\n"
+            f"🏷️ **Group Title:** {chat_title}\n"
+            f"📑 **Found {len(topics)} Topics:**\n\n"
+            f"{topics_list_text}\n\n"
+            f"Choose an option below to proceed:",
+            reply_markup=btn
+        )
+        return
+
+    # Case 3: Normal Channel or Group
+    state['step'] = 'normal_chat_confirm'
+    btn = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🚀 Clone All Messages", callback_data="clone_normal_all"),
+            InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
+        ]
+    ])
+
+    await status_msg.edit_text(
+        f"📢 **Channel / Group Detected:** {chat_title}\n\n"
+        f"Do you want to clone messages from this chat?",
+        reply_markup=btn
+    )
 
 
 @X.on_message(filters.command(['clone', 'topic', 'clonegroup', 'groupclone']) & filters.private)
@@ -77,17 +217,24 @@ async def clone_command_handler(c: Client, m: Message):
     pro = await m.reply_text("🔍 Checking configuration, please hold on...")
 
     if is_user_active(uid):
-        await pro.edit("⚠️ You already have an active task running. Use `/stop` or `/cancel` to cancel it first.")
+        await pro.edit_text("⚠️ You already have an active task running. Use `/stop` or `/cancel` to cancel it first.")
         return
 
     ubot = await get_ubot(uid)
     if not ubot:
-        await pro.edit("⚠️ Please add your bot using `/setbot <token>` first.")
+        await pro.edit_text("⚠️ Please add your bot using `/setbot <token>` first.")
         return
 
     uc = await get_uclient(uid)
     if not uc:
-        await pro.edit("⚠️ User session not found! Please login using `/login` to access groups and topics.")
+        await pro.edit_text("⚠️ User session not found! Please login using `/login` to access groups and topics.")
+        return
+
+    # Check if link was provided directly in command: /clone https://t.me/...
+    args = m.text.split(maxsplit=1)
+    if len(args) > 1:
+        link_text = args[1].strip()
+        await handle_link_flow(c, m, link_text, pro)
         return
 
     CLONE_STATE[uid] = {'step': 'waiting_link'}
@@ -96,14 +243,47 @@ async def clone_command_handler(c: Client, m: Message):
         "🚀 **Smart Topic & Group Cloner**\n\n"
         "Please send the **Group, Channel, or Forum Topic link**:\n\n"
         "📌 **Examples:**\n"
-        "• Private Forum Group: `https://t.me/c/1234567890`\n"
-        "• Public Group/Channel: `https://t.me/groupusername`\n"
-        "• Specific Forum Topic: `https://t.me/c/1234567890/42`\n"
-        "• Specific Message in Topic: `https://t.me/c/1234567890/42/100`\n\n"
+        "• Private Forum Group: `https://t.me/c/2884241848`\n"
+        "• Specific Forum Topic: `https://t.me/c/2884241848/49012`\n"
+        "• Public Group/Channel: `https://t.me/groupusername`\n\n"
         "👉 _The bot will automatically discover all topics and can even create a brand new cloned group with same Name, DP & Topics!_"
     )
 
-    await pro.edit(help_text)
+    await pro.edit_text(help_text)
+
+
+@X.on_message(filters.regex(r'(https?://)?(t\.me|telegram\.me)/') & filters.private & ~login_in_progress)
+async def auto_link_handler(c: Client, m: Message):
+    """Automatically handles any Telegram link sent directly to the bot."""
+    uid = m.from_user.id
+
+    # If batch command is already waiting for input from user, let batch handle it
+    if uid in Z:
+        return
+
+    if is_user_active(uid):
+        await m.reply_text("⚠️ You already have an active task running. Use `/stop` to cancel it.")
+        return
+
+    if FREEMIUM_LIMIT == 0 and not await is_premium_user(uid):
+        await m.reply_text("⚠️ This bot does not provide free services, get a subscription from OWNER.")
+        return
+
+    if await sub(c, m) == 1:
+        return
+
+    ubot = await get_ubot(uid)
+    if not ubot:
+        await m.reply_text("⚠️ Please add your bot using `/setbot <token>` first.")
+        return
+
+    uc = await get_uclient(uid)
+    if not uc:
+        await m.reply_text("⚠️ User session not found! Please login using `/login` to access groups and topics.")
+        return
+
+    status_msg = await m.reply_text("🔍 Telegram link detected! Checking...")
+    await handle_link_flow(c, m, m.text.strip(), status_msg)
 
 
 @X.on_message(filters.text & filters.private & ~login_in_progress & ~filters.command([
@@ -119,120 +299,8 @@ async def clone_text_handler(c: Client, m: Message):
     step = state.get('step')
 
     if step == 'waiting_link':
-        link_text = m.text.strip()
-        chat_id, topic_id, msg_id, link_type = parse_tg_link(link_text)
-
-        if not chat_id:
-            await m.reply_text("❌ Invalid link format. Please provide a valid Telegram link.")
-            CLONE_STATE.pop(uid, None)
-            return
-
-        status_msg = await m.reply_text("⏳ Inspecting chat and discovering forum topics...")
-
-        uc = await get_uclient(uid)
-        if not uc:
-            await status_msg.edit("⚠️ User client session error. Please `/login` again.")
-            CLONE_STATE.pop(uid, None)
-            return
-
-        # Ensure dialogs are loaded
-        await upd_dlg(uc)
-
-        chat_obj, resolved_id = await resolve_tg_chat(uc, chat_id)
-        if not chat_obj:
-            await status_msg.edit(
-                "❌ Could not access this chat.\n"
-                "Please make sure your logged-in account has joined this group/channel!"
-            )
-            CLONE_STATE.pop(uid, None)
-            return
-
-        chat_title = getattr(chat_obj, 'title', str(resolved_id))
-        chat_desc = getattr(chat_obj, 'description', '')
-        chat_photo = getattr(chat_obj.photo, 'big_file_id', None) if getattr(chat_obj, 'photo', None) else None
-        is_forum = getattr(chat_obj, 'is_forum', False)
-
-        state['chat_id'] = resolved_id
-        state['chat_title'] = chat_title
-        state['chat_desc'] = chat_desc
-        state['chat_photo'] = chat_photo
-        state['link_type'] = link_type
-        state['is_forum'] = is_forum
-
-        # Case 1: Direct Topic Link was provided (e.g., .../42 or .../42/100)
-        if topic_id is not None:
-            state['topic_id'] = topic_id
-            state['step'] = 'confirm_single_topic'
-
-            msg_ids = await get_topic_messages_list(uc, resolved_id, topic_id)
-            state['msg_ids'] = msg_ids
-            state['topic_title'] = f"Topic #{topic_id}"
-
-            btn = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("▶️ Start Cloning Topic", callback_data="clone_start_topic"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
-                ]
-            ])
-
-            await status_msg.edit(
-                f"📌 **Forum Topic Detected!**\n\n"
-                f"📁 **Group:** {chat_title}\n"
-                f"🏷️ **Topic ID:** `{topic_id}`\n"
-                f"📊 **Total Messages Found:** `{len(msg_ids)}`\n\n"
-                f"Ready to clone all contents belonging to this topic?",
-                reply_markup=btn
-            )
-            return
-
-        # Case 2: Entire Forum Supergroup (is_forum=True)
-        if is_forum:
-            topics = await get_all_forum_topics(uc, resolved_id)
-            if topics:
-                state['topics'] = topics
-                state['step'] = 'select_topic_mode'
-
-                topics_list_text = "\n".join(
-                    [f"• 🔹 **{t['title']}** (`ID: {t['id']}`) - ~{t['total_messages']} msgs" for t in topics[:15]]
-                )
-                if len(topics) > 15:
-                    topics_list_text += f"\n• ... and {len(topics) - 15} more topics"
-
-                btn = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(f"🚀 Clone All Topics ({len(topics)})", callback_data="clone_choose_destination"),
-                    ],
-                    [
-                        InlineKeyboardButton("🎯 Choose Specific Topic", callback_data="clone_pick_topic"),
-                        InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
-                    ]
-                ])
-
-                await status_msg.edit(
-                    f"📁 **Forum Supergroup Detected!**\n\n"
-                    f"🏷️ **Group Title:** {chat_title}\n"
-                    f"📑 **Found {len(topics)} Topics:**\n\n"
-                    f"{topics_list_text}\n\n"
-                    f"Choose an option below to proceed:",
-                    reply_markup=btn
-                )
-                return
-
-        # Case 3: Normal Channel or Group (Not a forum)
-        state['step'] = 'normal_chat_confirm'
-        btn = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🚀 Clone All Messages", callback_data="clone_normal_all"),
-                InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
-            ]
-        ])
-
-        await status_msg.edit(
-            f"📢 **Channel / Group Detected:** {chat_title}\n\n"
-            f"This chat does not use forum topics.\n"
-            f"Do you want to clone messages from this chat?",
-            reply_markup=btn
-        )
+        status_msg = await m.reply_text("🔍 Processing link...")
+        await handle_link_flow(c, m, m.text.strip(), status_msg)
 
     elif step == 'waiting_topic_number':
         input_val = m.text.strip()
@@ -271,7 +339,7 @@ async def clone_text_handler(c: Client, m: Message):
             ]
         ])
 
-        await status_msg.edit(
+        await status_msg.edit_text(
             f"📌 **Topic Selected:** {selected_topic['title']}\n"
             f"🏷️ **Topic ID:** `{selected_topic['id']}`\n"
             f"📊 **Messages Found:** `{len(msg_ids)}`\n\n"
@@ -317,7 +385,6 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
         return
 
     elif data == "clone_choose_destination":
-        # Ask where to clone: Auto Create New Group vs Existing Chat
         chat_title = state.get('chat_title', 'Group')
         btn = InlineKeyboardMarkup([
             [
