@@ -72,38 +72,39 @@ def parse_tg_link(L):
     L = L.strip()
     
     # 1. Private link with 3 parts: https://t.me/c/1234567890/42/105
-    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)/(\d+)', L)
+    m = re.search(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)/(\d+)', L)
     if m:
         return f"-100{m.group(1)}", int(m.group(2)), int(m.group(3)), 'private'
     
     # 2. Private link with 2 parts: https://t.me/c/1234567890/42
-    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)', L)
+    m = re.search(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)', L)
     if m:
         return f"-100{m.group(1)}", int(m.group(2)), None, 'private'
     
     # 3. Private link with 1 part (group only): https://t.me/c/1234567890
-    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/?', L)
+    m = re.search(r'(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)', L)
     if m:
         return f"-100{m.group(1)}", None, None, 'private'
     
     # 4. Public link with 3 parts: https://t.me/username/42/105
-    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/]+)/(\d+)/(\d+)', L)
+    m = re.search(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/\s]+)/(\d+)/(\d+)', L)
     if m and not m.group(1).startswith(('c', 'joinchat', '+')):
         return m.group(1), int(m.group(2)), int(m.group(3)), 'public'
     
     # 5. Public link with 2 parts: https://t.me/username/42
-    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/]+)/(\d+)', L)
+    m = re.search(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/\s]+)/(\d+)', L)
     if m and not m.group(1).startswith(('c', 'joinchat', '+')):
         return m.group(1), int(m.group(2)), None, 'public'
     
     # 6. Public link with group name only: https://t.me/username
-    m = re.match(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/?#]+)', L)
+    m = re.search(r'(?:https?://)?(?:t\.me|telegram\.me)/([^/\s?#]+)', L)
     if m and not m.group(1).startswith(('c', 'joinchat', '+')):
         return m.group(1), None, None, 'public'
     
     # 7. Raw username: @username
     if L.startswith('@'):
-        return L[1:], None, None, 'public'
+        clean_user = L[1:].split()[0]
+        return clean_user, None, None, 'public'
     
     # 8. Raw chat ID (e.g. -1001234567890)
     if L.startswith('-100') and L[4:].isdigit():
