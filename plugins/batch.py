@@ -86,6 +86,8 @@ async def upd_dlg(c):
         print(f'Failed to update dialogs: {e}')
         return False
 
+PEER_CACHE = {}
+
 async def get_msg(c, u, i, d, lt):
     try:
         if lt == 'public':
@@ -102,26 +104,33 @@ async def get_msg(c, u, i, d, lt):
                 return None
         else:
             if u:
-                try:
-                    async for _ in u.get_dialogs(limit=50): pass
-                    chat_id = i if str(i).startswith('-100') else f'-100{i}' if i.isdigit() else i
+                chat_id = i if str(i).startswith('-100') else f'-100{i}' if str(i).isdigit() else i
+                if str(chat_id) in PEER_CACHE:
+                    resolved_id = PEER_CACHE[str(chat_id)]
                     try:
-                        peer = await u.resolve_peer(chat_id)
-                        if hasattr(peer, 'channel_id'): resolved_id = f'-100{peer.channel_id}'
-                        elif hasattr(peer, 'chat_id'): resolved_id = f'-{peer.chat_id}'
-                        elif hasattr(peer, 'user_id'): resolved_id = peer.user_id
-                        else: resolved_id = chat_id
                         return await u.get_messages(resolved_id, d)
                     except Exception:
+                        pass
+
+                try:
+                    peer = await u.resolve_peer(chat_id)
+                    if hasattr(peer, 'channel_id'): resolved_id = f'-100{peer.channel_id}'
+                    elif hasattr(peer, 'chat_id'): resolved_id = f'-{peer.chat_id}'
+                    elif hasattr(peer, 'user_id'): resolved_id = peer.user_id
+                    else: resolved_id = chat_id
+                    PEER_CACHE[str(chat_id)] = resolved_id
+                    return await u.get_messages(resolved_id, d)
+                except Exception:
+                    try:
+                        chat = await u.get_chat(chat_id)
+                        PEER_CACHE[str(chat_id)] = chat.id
+                        return await u.get_messages(chat.id, d)
+                    except Exception:
+                        await upd_dlg(u)
                         try:
-                            chat = await u.get_chat(chat_id)
-                            return await u.get_messages(chat.id, d)
-                        except Exception:
-                            async for _ in u.get_dialogs(limit=200): pass
                             return await u.get_messages(chat_id, d)
-                except Exception as e:
-                    print(f'Private channel error: {e}')
-                    return None
+                        except Exception:
+                            return None
             return None
     except Exception as e:
         print(f'Error fetching message: {e}')
@@ -132,7 +141,7 @@ async def get_ubot(uid):
     if not bt: return None
     if uid in UB: return UB.get(uid)
     try:
-        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH)
+        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH, max_concurrent_transmissions=10)
         await bot.start()
         UB[uid] = bot
         return bot
@@ -150,7 +159,7 @@ async def get_uclient(uid):
     if xxx:
         try:
             ss = dcs(xxx)
-            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss)
+            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, max_concurrent_transmissions=10)
             await gg.start()
             await upd_dlg(gg)
             UC[uid] = gg
@@ -162,18 +171,24 @@ async def get_uclient(uid):
 
 async def prog(c, t, C, h, m, st):
     global P
-    p = c / t * 100
-    interval = 10 if t >= 100 * 1024 * 1024 else 20 if t >= 50 * 1024 * 1024 else 30 if t >= 10 * 1024 * 1024 else 50
-    step = int(p // interval) * interval
-    if m not in P or P[m] != step or p >= 100:
-        P[m] = step
-        c_mb = c / (1024 * 1024)
-        t_mb = t / (1024 * 1024)
-        bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
-        speed = c / (time.time() - st) / (1024 * 1024) if time.time() > st else 0
-        eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
-        await C.edit_message_text(h, m, f"__**Pyro Handler...**__\n\n{bar}\n\n⚡**__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n📊 **__Done__**: {p:.2f}%\n🚀 **__Speed__**: {speed:.2f} MB/s\n⏳ **__ETA__**: {eta}\n\n**__Powered by Rixie__**")
-        if p >= 100: P.pop(m, None)
+    try:
+        p = c / t * 100
+        interval = 15 if t >= 100 * 1024 * 1024 else 25 if t >= 50 * 1024 * 1024 else 35
+        step = int(p // interval) * interval
+        if m not in P or P[m] != step or p >= 100:
+            P[m] = step
+            c_mb = c / (1024 * 1024)
+            t_mb = t / (1024 * 1024)
+            bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
+            speed = c / (time.time() - st) / (1024 * 1024) if time.time() > st else 0
+            eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
+            try:
+                await C.edit_message_text(h, m, f"__**Pyro Handler...**__\n\n{bar}\n\n⚡**__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n📊 **__Done__**: {p:.2f}%\n🚀 **__Speed__**: {speed:.2f} MB/s\n⏳ **__ETA__**: {eta}\n\n**__Powered by Rixie__**")
+            except Exception:
+                pass
+            if p >= 100: P.pop(m, None)
+    except Exception:
+        pass
 
 async def send_direct(c, m, tcid, ft=None, rtmid=None):
     try:
