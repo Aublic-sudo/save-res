@@ -423,13 +423,16 @@ async def cancel_cmd(c, m):
     else:
         await m.reply_text('No active batch process found.')
 
+from pyrogram import ContinuePropagation
+
 @X.on_message(filters.text & filters.private & ~login_in_progress & ~filters.command([
     'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set', 
     'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo', 'encrypt', 'decrypt', 'keys', 'setbot', 'rembot',
     'clone', 'topic', 'clonegroup', 'groupclone']))
 async def text_handler(c, m):
     uid = m.from_user.id
-    if uid not in Z: return
+    if uid not in Z:
+        raise ContinuePropagation
     s = Z[uid].get('step')
 
     if s == 'start':

@@ -212,7 +212,7 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
     )
 
 
-@X.on_message(filters.command(['clone', 'topic', 'clonegroup', 'groupclone']) & filters.private)
+@X.on_message(filters.command(['clone', 'topic', 'clonegroup', 'groupclone']) & filters.private, group=10)
 async def clone_command_handler(c: Client, m: Message):
     uid = m.from_user.id
 
@@ -261,7 +261,7 @@ async def clone_command_handler(c: Client, m: Message):
     await pro.edit_text(help_text)
 
 
-@X.on_message(filters.regex(r'(https?://)?(t\.me|telegram\.me)/') & filters.private & ~login_in_progress)
+@X.on_message(filters.regex(r'(https?://)?(t\.me|telegram\.me)/') & filters.private & ~login_in_progress, group=11)
 async def auto_link_handler(c: Client, m: Message):
     """Automatically handles any Telegram link sent directly to the bot."""
     uid = m.from_user.id
@@ -297,7 +297,7 @@ async def auto_link_handler(c: Client, m: Message):
 @X.on_message(filters.text & filters.private & ~login_in_progress & ~filters.command([
     'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set', 
     'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo', 'encrypt', 'decrypt', 'keys', 'setbot', 'rembot',
-    'clone', 'topic', 'clonegroup', 'groupclone']))
+    'clone', 'topic', 'clonegroup', 'groupclone']), group=12)
 async def clone_text_handler(c: Client, m: Message):
     uid = m.from_user.id
     if uid not in CLONE_STATE:
@@ -318,6 +318,10 @@ async def clone_text_handler(c: Client, m: Message):
         
         skip_count = int(input_val)
         all_msg_ids = state.get('all_msg_ids', [])
+        if not all_msg_ids:
+            all_msg_ids = state.get('msg_ids', [])
+            state['all_msg_ids'] = list(all_msg_ids)
+
         if skip_count >= len(all_msg_ids):
             await m.reply_text(f"❌ Skip count ({skip_count}) is greater than or equal to total messages ({len(all_msg_ids)}).")
             return
@@ -506,6 +510,9 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
     elif data == "clone_skip_topic_prompt":
         state['step'] = 'waiting_skip_count'
         all_msgs = state.get('all_msg_ids', [])
+        if not all_msgs:
+            all_msgs = state.get('msg_ids', [])
+            state['all_msg_ids'] = list(all_msgs)
         await cb.answer()
         await cb.message.edit_text(
             f"🔢 **Resume / Skip Setup:**\n\n"
