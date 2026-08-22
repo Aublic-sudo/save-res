@@ -320,6 +320,22 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
     )
 
 
+@X.on_message(filters.command(['forcestop', 'kill', 'forcecancel', 'stopall']) & filters.private, group=10)
+async def clone_force_stop_cmd(c: Client, m: Message):
+    uid = m.from_user.id
+    await remove_active_batch(uid)
+    CLONE_STATE.pop(uid, None)
+    Z.pop(uid, None)
+    try:
+        cleanup_stray_temp_files()
+    except Exception:
+        pass
+    await m.reply_text(
+        "🛑 **Force Stop Executed!**\n\n"
+        "All running downloads, uploads, and batch cloning processes have been forcefully terminated!"
+    )
+
+
 @X.on_message(filters.command(['clone', 'topic', 'clonegroup', 'groupclone']) & filters.private, group=10)
 async def clone_command_handler(c: Client, m: Message):
     uid = m.from_user.id
@@ -843,29 +859,23 @@ async def run_single_topic_cloning(
 
             await update_batch_progress(uid, idx, success)
 
-            # Retry up to 2 times per message to prevent false failures
             cloned = False
-            for attempt in range(2):
-                try:
-                    msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
-                    if msg:
-                        res = await process_msg(
-                            ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
-                            target_override=target_override,
-                            topic_override=topic_override
-                        )
-                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
-                            success += 1
-                            cloned = True
-                            break
-                    else:
-                        await asyncio.sleep(1)
-                except FloodWait as e:
-                    logger.warning(f"FloodWait hit: sleeping for {e.value + 1}s")
-                    await asyncio.sleep(e.value + 1)
-                except Exception as e:
-                    logger.error(f"Attempt {attempt+1} error cloning msg {mid}: {e}")
-                    await asyncio.sleep(1)
+            try:
+                msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
+                if msg:
+                    res = await process_msg(
+                        ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
+                        target_override=target_override,
+                        topic_override=topic_override
+                    )
+                    if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                        success += 1
+                        cloned = True
+            except FloodWait as e:
+                logger.warning(f"FloodWait hit: sleeping for {e.value + 1}s")
+                await asyncio.sleep(e.value + 1)
+            except Exception as e:
+                logger.error(f"Error cloning msg {mid}: {e}")
 
             if not cloned:
                 failed += 1
@@ -882,7 +892,7 @@ async def run_single_topic_cloning(
                         f"{bar} `{percent}%`\n\n"
                         f"📊 **Progress:** `{idx}/{total}`\n"
                         f"✅ **Success:** `{success}` | ❌ **Failed:** `{failed}`\n"
-                        f"⏳ Use `/stop` to cancel."
+                        f"⏳ Use `/stop` or `/forcestop` to cancel."
                     )
                 except Exception:
                     pass
@@ -1060,27 +1070,22 @@ async def run_full_group_cloning(
                     break
 
                 cloned = False
-                for attempt in range(2):
-                    try:
-                        msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
-                        if msg:
-                            res = await process_msg(
-                                ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
-                                target_override=base_target_chat,
-                                topic_override=dest_topic_id
-                            )
-                            if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
-                                total_cloned += 1
-                                cloned = True
-                                break
-                        else:
-                            await asyncio.sleep(1)
-                    except FloodWait as e:
-                        logger.warning(f"FloodWait hit in group clone: sleeping for {e.value + 1}s")
-                        await asyncio.sleep(e.value + 1)
-                    except Exception as e:
-                        logger.error(f"Attempt {attempt+1} error cloning msg {mid} in topic {t_id}: {e}")
-                        await asyncio.sleep(1)
+                try:
+                    msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
+                    if msg:
+                        res = await process_msg(
+                            ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
+                            target_override=base_target_chat,
+                            topic_override=dest_topic_id
+                        )
+                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                            total_cloned += 1
+                            cloned = True
+                except FloodWait as e:
+                    logger.warning(f"FloodWait hit in group clone: sleeping for {e.value + 1}s")
+                    await asyncio.sleep(e.value + 1)
+                except Exception as e:
+                    logger.error(f"Error cloning msg {mid} in topic {t_id}: {e}")
 
                 if not cloned:
                     total_failed += 1
@@ -1093,7 +1098,7 @@ async def run_full_group_cloning(
                             f"📂 **Current Topic:** {t_title} (`{t_idx}/{total_topics}`)\n"
                             f"📊 **Topic Progress:** `{m_idx}/{topic_total}`\n"
                             f"⚡ **Total Cloned:** `{total_cloned}`\n\n"
-                            f"⏳ Use `/stop` to cancel."
+                            f"⏳ Use `/stop` or `/forcestop` to cancel."
                         )
                     except Exception:
                         pass
@@ -1169,26 +1174,21 @@ async def run_retry_failed_cloning(c: Client, uid: int, status_msg: Message, tas
             await update_batch_progress(uid, idx, success)
 
             cloned = False
-            for attempt in range(2):
-                try:
-                    msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
-                    if msg:
-                        res = await process_msg(
-                            ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
-                            target_override=target_override,
-                            topic_override=topic_override
-                        )
-                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
-                            success += 1
-                            cloned = True
-                            break
-                    else:
-                        await asyncio.sleep(1)
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 1)
-                except Exception as e:
-                    logger.error(f"Retry error on msg {mid}: {e}")
-                    await asyncio.sleep(1)
+            try:
+                msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
+                if msg:
+                    res = await process_msg(
+                        ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
+                        target_override=target_override,
+                        topic_override=topic_override
+                    )
+                    if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                        success += 1
+                        cloned = True
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception as e:
+                logger.error(f"Retry error on msg {mid}: {e}")
 
             if not cloned:
                 failed += 1
@@ -1295,27 +1295,22 @@ async def run_normal_channel_cloning(
             await update_batch_progress(uid, idx, success)
 
             cloned = False
-            for attempt in range(2):
-                try:
-                    msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
-                    if msg:
-                        res = await process_msg(
-                            ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
-                            target_override=target_override,
-                            topic_override=topic_override
-                        )
-                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
-                            success += 1
-                            cloned = True
-                            break
-                    else:
-                        await asyncio.sleep(1)
-                except FloodWait as e:
-                    logger.warning(f"FloodWait hit in channel clone: sleeping for {e.value + 1}s")
-                    await asyncio.sleep(e.value + 1)
-                except Exception as e:
-                    logger.error(f"Attempt {attempt+1} error cloning channel msg {mid}: {e}")
-                    await asyncio.sleep(1)
+            try:
+                msg = await get_msg(ubot, uc, str(chat_id), mid, link_type)
+                if msg:
+                    res = await process_msg(
+                        ubot, uc, msg, str(uid), link_type, uid, str(chat_id),
+                        target_override=target_override,
+                        topic_override=topic_override
+                    )
+                    if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                        success += 1
+                        cloned = True
+            except FloodWait as e:
+                logger.warning(f"FloodWait hit in channel clone: sleeping for {e.value + 1}s")
+                await asyncio.sleep(e.value + 1)
+            except Exception as e:
+                logger.error(f"Error cloning channel msg {mid}: {e}")
 
             if not cloned:
                 failed += 1

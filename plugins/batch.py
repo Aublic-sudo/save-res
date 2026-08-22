@@ -172,21 +172,36 @@ async def get_uclient(uid):
 async def prog(c, t, C, h, m, st):
     global P
     try:
-        p = c / t * 100
-        interval = 15 if t >= 100 * 1024 * 1024 else 25 if t >= 50 * 1024 * 1024 else 35
-        step = int(p // interval) * interval
-        if m not in P or P[m] != step or p >= 100:
-            P[m] = step
+        pct = c / t * 100
+        key = f"{h}_{m}"
+        now = time.time()
+        
+        last_time, last_step = P.get(key, (0, -1))
+        step = int(pct // 5) * 5
+        
+        if (now - last_time >= 1.5) or step != last_step or pct >= 100:
+            P[key] = (now, step)
             c_mb = c / (1024 * 1024)
             t_mb = t / (1024 * 1024)
-            bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
-            speed = c / (time.time() - st) / (1024 * 1024) if time.time() > st else 0
+            bar = '🟢' * int(pct / 10) + '🔴' * (10 - int(pct / 10))
+            elapsed = now - st
+            speed = c / elapsed / (1024 * 1024) if elapsed > 0 else 0
             eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
             try:
-                await C.edit_message_text(h, m, f"__**Pyro Handler...**__\n\n{bar}\n\n⚡**__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n📊 **__Done__**: {p:.2f}%\n🚀 **__Speed__**: {speed:.2f} MB/s\n⏳ **__ETA__**: {eta}\n\n**__Powered by Rixie__**")
+                await C.edit_message_text(
+                    h, m,
+                    f"__**Pyro Handler...**__\n\n"
+                    f"{bar}\n\n"
+                    f"⚡ **__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n"
+                    f"📊 **__Done__**: {pct:.2f}%\n"
+                    f"🚀 **__Speed__**: {speed:.2f} MB/s\n"
+                    f"⏳ **__ETA__**: {eta}\n\n"
+                    f"**__Powered by Rixie__**"
+                )
             except Exception:
                 pass
-            if p >= 100: P.pop(m, None)
+            if pct >= 100:
+                P.pop(key, None)
     except Exception:
         pass
 
@@ -218,6 +233,7 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
     f = None
     th = None
     p = None
+    prog_client = c
     try:
         cfg_chat = await get_user_data_key(d, 'chat_id', None)
         tcid = d
@@ -249,9 +265,11 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             p = None
             try:
                 p = await c.send_message(d, 'Downloading...')
+                prog_client = c
             except Exception:
                 try:
                     p = await X.send_message(d, 'Downloading...')
+                    prog_client = X
                 except Exception:
                     p = None
 
@@ -273,17 +291,17 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 m,
                 file_name=c_name,
                 progress=prog if p else None,
-                progress_args=(c, d, p.id, st) if p else None
+                progress_args=(prog_client, d, p.id, st) if p else None
             )
             
             if not f or not os.path.exists(f):
                 if p:
-                    try: await c.edit_message_text(d, p.id, 'Failed.')
+                    try: await prog_client.edit_message_text(d, p.id, 'Failed.')
                     except: pass
                 return 'Failed.'
             
             if p:
-                try: await c.edit_message_text(d, p.id, 'Renaming...')
+                try: await prog_client.edit_message_text(d, p.id, 'Renaming...')
                 except: pass
             if (
                 (m.video and m.video.file_name) or
@@ -299,7 +317,7 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             if fsize > 2 and Y:
                 st = time.time()
                 if p:
-                    try: await c.edit_message_text(d, p.id, 'File is larger than 2GB. Using alternative method...')
+                    try: await prog_client.edit_message_text(d, p.id, 'File is larger than 2GB. Using alternative method...')
                     except: pass
                 await upd_dlg(Y)
                 mtd = await get_video_metadata(f)
@@ -322,22 +340,22 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                                         caption=ft if m.caption and mtype not in ['video_note', 'voice'] else None, 
                                         reply_to_message_id=rtmid,
                                         progress=prog if p else None,
-                                        progress_args=(c, d, p.id, st) if p else None)
+                                        progress_args=(prog_client, d, p.id, st) if p else None)
                         break
                 else:
                     sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
                                                 reply_to_message_id=rtmid,
                                                 progress=prog if p else None,
-                                                progress_args=(c, d, p.id, st) if p else None)
+                                                progress_args=(prog_client, d, p.id, st) if p else None)
                 
                 await c.copy_message(d, LOG_GROUP, sent.id)
                 if p:
-                    try: await c.delete_messages(d, p.id)
+                    try: await prog_client.delete_messages(d, p.id)
                     except: pass
                 return 'Done (Large file).'
             
             if p:
-                try: await c.edit_message_text(d, p.id, 'Uploading...')
+                try: await prog_client.edit_message_text(d, p.id, 'Uploading...')
                 except: pass
             st = time.time()
 
@@ -351,21 +369,21 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                         tcid, video=f, caption=ft if m.caption else None, 
                         thumb=th_use, width=w, height=h, duration=dur, 
                         progress=prog if p else None,
-                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        progress_args=(prog_client, d, p.id, st) if p else None, 
                         reply_to_message_id=rtmid
                     )
                 elif m.video_note:
                     await client_to_use.send_video_note(
                         tcid, video_note=f,
                         progress=prog if p else None, 
-                        progress_args=(client_to_use, d, p.id, st) if p else None,
+                        progress_args=(prog_client, d, p.id, st) if p else None,
                         reply_to_message_id=rtmid
                     )
                 elif m.voice:
                     await client_to_use.send_voice(
                         tcid, f,
                         progress=prog if p else None,
-                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        progress_args=(prog_client, d, p.id, st) if p else None, 
                         reply_to_message_id=rtmid
                     )
                 elif m.sticker:
@@ -374,38 +392,42 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                     await client_to_use.send_audio(
                         tcid, audio=f, caption=ft if m.caption else None, 
                         thumb=th, progress=prog if p else None,
-                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        progress_args=(prog_client, d, p.id, st) if p else None, 
                         reply_to_message_id=rtmid
                     )
                 elif m.photo:
                     await client_to_use.send_photo(
                         tcid, photo=f, caption=ft if m.caption else None, 
                         progress=prog if p else None,
-                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        progress_args=(prog_client, d, p.id, st) if p else None, 
                         reply_to_message_id=rtmid
                     )
                 else:
                     await client_to_use.send_document(
                         tcid, document=f, caption=ft if m.caption else None, 
                         progress=prog if p else None,
-                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        progress_args=(prog_client, d, p.id, st) if p else None, 
                         reply_to_message_id=rtmid
                     )
 
+            sent_done = False
             try:
                 await do_upload(c)
+                sent_done = True
             except Exception as upload_err:
-                print(f"Upload via custom bot failed ({upload_err}), trying main bot X...")
-                try:
-                    await do_upload(X)
-                except Exception as fallback_err:
-                    if p:
-                        try: await c.edit_message_text(d, p.id, f'Upload failed: {str(fallback_err)[:30]}')
-                        except: pass
-                    return f'Failed: {str(fallback_err)[:30]}'
+                if not sent_done:
+                    print(f"Upload via custom bot failed ({upload_err}), trying main bot X...")
+                    try:
+                        await do_upload(X)
+                        sent_done = True
+                    except Exception as fallback_err:
+                        if p:
+                            try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(fallback_err)[:30]}')
+                            except: pass
+                        return f'Failed: {str(fallback_err)[:30]}'
             
             if p:
-                try: await c.delete_messages(d, p.id)
+                try: await prog_client.delete_messages(d, p.id)
                 except: pass
             return 'Done.'
             
@@ -467,6 +489,26 @@ async def cancel_cmd(c, m):
             await m.reply_text('Failed to request cancellation. Please try again.')
     else:
         await m.reply_text('No active batch process found.')
+
+@X.on_message(filters.command(['forcestop', 'kill', 'forcecancel', 'stopall']) & filters.private)
+async def force_stop_cmd(c, m):
+    uid = m.from_user.id
+    await remove_active_batch(uid)
+    Z.pop(uid, None)
+    try:
+        from plugins.clone import CLONE_STATE
+        CLONE_STATE.pop(uid, None)
+    except Exception:
+        pass
+    try:
+        from utils.func import cleanup_stray_temp_files
+        cleanup_stray_temp_files()
+    except Exception:
+        pass
+    await m.reply_text(
+        "🛑 **Force Stop Executed!**\n\n"
+        "All running downloads, uploads, and batch cloning processes have been forcefully terminated!"
+    )
 
 from pyrogram import ContinuePropagation
 
