@@ -245,13 +245,9 @@ async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
 async def create_forum_topic_safe(client, chat_id, title):
     """
     Creates a new forum topic in a supergroup if supported.
-    Returns the created topic ID or None.
+    Returns the created topic ID (integer) or None.
     """
     try:
-        if hasattr(client, 'create_forum_topic'):
-            topic = await client.create_forum_topic(chat_id, title=title)
-            return getattr(topic, 'id', getattr(topic, 'message_thread_id', None))
-        
         from pyrogram.raw.functions.channels import CreateForumTopic
         import random
         peer = await client.resolve_peer(chat_id)
@@ -259,16 +255,32 @@ async def create_forum_topic_safe(client, chat_id, title):
         res = await client.invoke(
             CreateForumTopic(
                 channel=peer,
-                title=title,
+                title=str(title)[:128],
                 random_id=random_id
             )
         )
-        if hasattr(res, 'updates'):
-            for u in res.updates:
-                if hasattr(u, 'id'):
-                    return u.id
-                if hasattr(u, 'message') and hasattr(u.message, 'id'):
-                    return u.message.id
+        topic_id = None
+        for u in getattr(res, 'updates', []):
+            msg = getattr(u, 'message', None)
+            if msg and hasattr(msg, 'id'):
+                topic_id = msg.id
+                break
+            if hasattr(u, 'random_id') and getattr(u, 'random_id') == random_id and hasattr(u, 'id'):
+                topic_id = u.id
+                break
+        if not topic_id:
+            for m in getattr(res, 'messages', []):
+                if hasattr(m, 'id'):
+                    topic_id = m.id
+                    break
+        if topic_id:
+            logger.info(f"Created topic '{title}' with ID {topic_id} in {chat_id}")
+            return int(topic_id)
+        if hasattr(client, 'create_forum_topic'):
+            topic = await client.create_forum_topic(chat_id, title=str(title)[:128])
+            tid = getattr(topic, 'id', getattr(topic, 'message_thread_id', None))
+            if tid:
+                return int(tid)
         return None
     except Exception as e:
         logger.error(f"Error creating forum topic '{title}' in {chat_id}: {e}")
