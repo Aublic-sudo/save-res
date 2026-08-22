@@ -35,20 +35,20 @@ FAILED_TASKS: Dict[int, Dict[str, Any]] = {}
 
 
 async def resolve_tg_chat(client, chat_identifier):
-    """Resolves chat_identifier to Chat object and resolved_id with deep fallback search."""
+    """Resolves chat_identifier to Chat object and resolved_id quickly with safety timeouts."""
     target_raw_id = str(chat_identifier).replace('-100', '') if str(chat_identifier).startswith('-100') else str(chat_identifier)
     
-    # 1. Direct get_chat
+    # 1. Direct get_chat (Fastest, 0.1s)
     try:
         c_id = int(f"-100{target_raw_id}") if target_raw_id.isdigit() else chat_identifier
-        chat = await client.get_chat(c_id)
+        chat = await asyncio.wait_for(client.get_chat(c_id), timeout=3)
         return chat, chat.id
     except Exception:
         pass
 
     # 2. Resolve peer
     try:
-        peer = await client.resolve_peer(chat_identifier)
+        peer = await asyncio.wait_for(client.resolve_peer(chat_identifier), timeout=3)
         if hasattr(peer, 'channel_id'):
             res_id = int(f"-100{peer.channel_id}")
         elif hasattr(peer, 'chat_id'):
@@ -57,21 +57,12 @@ async def resolve_tg_chat(client, chat_identifier):
             res_id = peer.user_id
         else:
             res_id = chat_identifier
-        chat = await client.get_chat(res_id)
+        chat = await asyncio.wait_for(client.get_chat(res_id), timeout=3)
         return chat, res_id
     except Exception:
         pass
 
-    # 3. Deep search in user's dialogs
-    try:
-        async for dialog in client.get_dialogs(limit=300):
-            d_chat = dialog.chat
-            if str(d_chat.id).replace('-100', '') == target_raw_id or getattr(d_chat, 'username', '') == str(chat_identifier).lstrip('@'):
-                return d_chat, d_chat.id
-    except Exception as e:
-        logger.error(f"Error searching dialogs for {chat_identifier}: {e}")
-
-    # 4. Fallback proxy chat object if numeric ID is valid
+    # 3. Fallback proxy chat object if numeric ID is valid (Instant 0s fallback)
     if target_raw_id.isdigit():
         c_id = int(f"-100{target_raw_id}")
         class ProxyChat:
@@ -83,7 +74,121 @@ async def resolve_tg_chat(client, chat_identifier):
                 self.is_forum = True
         return ProxyChat(c_id), c_id
 
+    # 4. Quick check in recent dialogs (limit=40 max)
+    try:
+        async for dialog in client.get_dialogs(limit=40):
+            d_chat = dialog.chat
+            if str(d_chat.id).replace('-100', '') == target_raw_id or getattr(d_chat, 'username', '') == str(chat_identifier).lstrip('@'):
+                return d_chat, d_chat.id
+    except Exception:
+        pass
+
     return None, chat_identifier
+
+
+def build_topics_page_view(topics: List[Dict[str, Any]], page: int = 1, page_size: int = 25, mode: str = 'pick'):
+    """Generates paginated text and inline keyboard navigation for topic lists."""
+    total_topics = len(topics)
+    total_pages = max(1, (total_topics + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * page_size
+    end_idx = min(start_idx + page_size, total_topics)
+    page_topics = topics[start_idx:end_idx]
+
+    header_title = "🔢 **Select Topic(s) to Clone:**" if mode == 'pick' else "🚫 **Select Topic(s) to IGNORE:**"
+    text = f"{header_title} _(Page {page} of {total_pages})_\n\n"
+
+    for i, t in enumerate(page_topics, start_idx + 1):
+        text += f"`{i}.` 🔹 **{t['title']}** (`ID: {t['id']}`)\n"
+
+    text += (
+        f"\n📄 _Showing topics {start_idx + 1}-{end_idx} of {total_topics}_\n\n"
+        f"👉 **Send your choice:**\n"
+        f"• Single Topic: `5` or `ID: 44514`\n"
+        f"• Multiple: `1, 3, 7` or `44514, 49012`\n"
+        f"• Range: `1-20` or `25-50`\n"
+        f"• Search by Name: e.g. `Maths` or `ગણિત`"
+    )
+
+    buttons = []
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"clone_tpage_{page - 1}_{mode}"))
+    nav_row.append(InlineKeyboardButton(f"📄 {page}/{total_pages}", callback_data="clone_noop"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"clone_tpage_{page + 1}_{mode}"))
+
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([
+        InlineKeyboardButton("📁 Download Full List (.txt)", callback_data="clone_send_txt_list"),
+        InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
+    ])
+
+    return text, InlineKeyboardMarkup(buttons)
+
+
+def parse_topic_input(input_val: str, all_topics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Smart parser for topic numbers, ranges (1-10), exact Topic IDs, and keyword searches."""
+    selected = []
+    seen_ids = set()
+
+    # Case 1: Search by text keyword if input is non-numeric text without commas
+    clean_val = input_val.strip()
+    if not re.search(r'[\d,-]', clean_val) and len(clean_val) >= 2:
+        for t in all_topics:
+            if clean_val.lower() in t.get('title', '').lower():
+                if t['id'] not in seen_ids:
+                    seen_ids.add(t['id'])
+                    selected.append(t)
+        return selected
+
+    # Case 2: Comma or space separated parts
+    raw_tokens = [tok.strip() for tok in clean_val.replace(' ', ',').split(',') if tok.strip()]
+
+    for tok in raw_tokens:
+        # Check range: e.g. "1-15" or "10-25"
+        range_match = re.match(r'^(\d+)\s*-\s*(\d+)$', tok)
+        if range_match:
+            start_n = int(range_match.group(1))
+            end_n = int(range_match.group(2))
+            if start_n > end_n:
+                start_n, end_n = end_n, start_n
+            for idx in range(start_n, end_n + 1):
+                if 1 <= idx <= len(all_topics):
+                    t = all_topics[idx - 1]
+                    if t['id'] not in seen_ids:
+                        seen_ids.add(t['id'])
+                        selected.append(t)
+            continue
+
+        # Check pure digit: could be serial number (1..N) or raw Topic ID (e.g. 44514)
+        if tok.isdigit():
+            val = int(tok)
+            # If valid 1-based index
+            if 1 <= val <= len(all_topics):
+                t = all_topics[val - 1]
+                if t['id'] not in seen_ids:
+                    seen_ids.add(t['id'])
+                    selected.append(t)
+            else:
+                # Search by exact Topic ID
+                found = False
+                for t in all_topics:
+                    if t['id'] == val:
+                        if t['id'] not in seen_ids:
+                            seen_ids.add(t['id'])
+                            selected.append(t)
+                        found = True
+                        break
+                # Fallback: if not in list, create custom entry
+                if not found and val > 0:
+                    selected.append({'id': val, 'title': f'Topic #{val}', 'total_messages': 0})
+                    seen_ids.add(val)
+
+    return selected
 
 
 async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Message):
@@ -101,9 +206,6 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
         await status_msg.edit_text("⚠️ User client session error. Please use `/login` first.")
         CLONE_STATE.pop(uid, None)
         return
-
-    await status_msg.edit_text("⏳ Inspecting chat and discovering forum topics...")
-    await upd_dlg(uc)
 
     chat_obj, resolved_id = await resolve_tg_chat(uc, chat_id)
     if not chat_obj:
@@ -125,7 +227,8 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
         'chat_desc': chat_desc,
         'chat_photo': chat_photo,
         'link_type': link_type,
-        'is_forum': is_forum
+        'is_forum': is_forum,
+        'current_page': 1
     }
     state = CLONE_STATE[uid]
 
@@ -161,6 +264,7 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
         return
 
     # Case 2: Full Forum Supergroup Link provided (e.g. https://t.me/c/2884241848)
+    await status_msg.edit_text(f"🔍 Discovering forum topics for **{chat_title}**...")
     topics = await get_all_forum_topics(uc, resolved_id)
     if topics:
         state['topics'] = topics
@@ -168,10 +272,10 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
         state['step'] = 'select_topic_mode'
 
         topics_list_text = "\n".join(
-            [f"• `{i+1}.` 🔹 **{t['title']}** (`ID: {t['id']}`) - ~{t['total_messages']} msgs" for i, t in enumerate(topics[:15])]
+            [f"• `{i+1}.` 🔹 **{t['title']}** (`ID: {t['id']}`)" for i, t in enumerate(topics[:12])]
         )
-        if len(topics) > 15:
-            topics_list_text += f"\n• ... and {len(topics) - 15} more topics"
+        if len(topics) > 12:
+            topics_list_text += f"\n• ... and {len(topics) - 12} more topics"
 
         btn = InlineKeyboardMarkup([
             [
@@ -182,6 +286,7 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
                 InlineKeyboardButton("🎯 Select Specific Topics", callback_data="clone_pick_topic")
             ],
             [
+                InlineKeyboardButton("📁 Download All Topics List (.txt)", callback_data="clone_send_txt_list"),
                 InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
             ]
         ])
@@ -201,13 +306,16 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
     btn = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🚀 Clone All Messages", callback_data="clone_normal_all"),
+            InlineKeyboardButton("🔢 Clone by Topic ID", callback_data="clone_pick_topic"),
+        ],
+        [
             InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
         ]
     ])
 
     await status_msg.edit_text(
-        f"📢 **Channel / Group Detected:** {chat_title}\n\n"
-        f"Do you want to clone messages from this chat?",
+        f"📢 **Group / Channel Detected:** {chat_title}\n\n"
+        f"Choose cloning mode below:",
         reply_markup=btn
     )
 
@@ -239,7 +347,6 @@ async def clone_command_handler(c: Client, m: Message):
         await pro.edit_text("⚠️ User session not found! Please login using `/login` to access groups and topics.")
         return
 
-    # Check if link was provided directly in command: /clone https://t.me/...
     args = m.text.split(maxsplit=1)
     if len(args) > 1:
         link_text = args[1].strip()
@@ -347,26 +454,12 @@ async def clone_text_handler(c: Client, m: Message):
         )
 
     elif step == 'waiting_ignore_topics':
-        # User gave comma-separated topic numbers to ignore: e.g. "1, 3, 5"
         input_val = m.text.strip()
         all_topics = state.get('all_topics', [])
-        raw_parts = [p.strip() for p in input_val.replace(' ', ',').split(',') if p.strip()]
-        
-        ignore_indices = set()
-        ignore_ids = set()
-        for p in raw_parts:
-            if p.isdigit():
-                val = int(p)
-                # If 1-based index
-                if 1 <= val <= len(all_topics):
-                    ignore_indices.add(val - 1)
-                else:
-                    ignore_ids.add(val)
+        ignored_topics = parse_topic_input(input_val, all_topics)
+        ignored_ids = {t['id'] for t in ignored_topics}
 
-        remaining_topics = []
-        for i, t in enumerate(all_topics):
-            if i not in ignore_indices and t['id'] not in ignore_ids:
-                remaining_topics.append(t)
+        remaining_topics = [t for t in all_topics if t['id'] not in ignored_ids]
 
         if not remaining_topics:
             await m.reply_text("❌ All topics were ignored! Please provide a valid ignore list.")
@@ -375,7 +468,6 @@ async def clone_text_handler(c: Client, m: Message):
         state['topics'] = remaining_topics
         ignored_count = len(all_topics) - len(remaining_topics)
 
-        # Proceed to destination choice
         chat_title = state.get('chat_title', 'Group')
         btn = InlineKeyboardMarkup([
             [
@@ -400,36 +492,22 @@ async def clone_text_handler(c: Client, m: Message):
         input_val = m.text.strip()
         all_topics = state.get('all_topics', state.get('topics', []))
 
-        # Check if user entered multiple topics to clone (e.g. "1, 2, 4" or single "3")
-        raw_parts = [p.strip() for p in input_val.replace(' ', ',').split(',') if p.strip()]
-        selected_topics = []
-
-        for p in raw_parts:
-            if p.isdigit():
-                idx = int(p)
-                if 1 <= idx <= len(all_topics):
-                    selected_topics.append(all_topics[idx - 1])
-                else:
-                    for t in all_topics:
-                        if t['id'] == idx:
-                            selected_topics.append(t)
-                            break
+        selected_topics = parse_topic_input(input_val, all_topics)
 
         if not selected_topics:
             await m.reply_text(
-                f"❌ Invalid selection. Please send topic numbers (e.g. `1` or `1, 2, 4`)."
+                f"❌ Invalid selection. Please send topic number (e.g. `5`), exact Topic ID (e.g. `44514`), range (e.g. `1-10`), or search word."
             )
             return
 
         if len(selected_topics) == 1:
-            # Single topic selected
             selected_topic = selected_topics[0]
             state['topic_id'] = selected_topic['id']
-            state['topic_title'] = selected_topic['title']
+            state['topic_title'] = selected_topic.get('title', f"Topic {selected_topic['id']}")
             state['step'] = 'confirm_single_topic'
 
             uc = await get_uclient(uid)
-            status_msg = await m.reply_text(f"⏳ Discovering messages for topic '{selected_topic['title']}'...")
+            status_msg = await m.reply_text(f"⏳ Discovering messages for topic '{selected_topic.get('title')}'...")
             msg_ids = await get_topic_messages_list(uc, state['chat_id'], selected_topic['id'])
             state['msg_ids'] = msg_ids
             state['all_msg_ids'] = list(msg_ids)
@@ -445,14 +523,13 @@ async def clone_text_handler(c: Client, m: Message):
             ])
 
             await status_msg.edit_text(
-                f"📌 **Topic Selected:** {selected_topic['title']}\n"
+                f"📌 **Topic Selected:** {selected_topic.get('title')}\n"
                 f"🏷️ **Topic ID:** `{selected_topic['id']}`\n"
                 f"📊 **Messages Found:** `{len(msg_ids)}`\n\n"
                 f"Ready to clone all contents belonging to this topic?",
                 reply_markup=btn
             )
         else:
-            # Multiple topics selected
             state['topics'] = selected_topics
             btn = InlineKeyboardMarkup([
                 [
@@ -466,8 +543,13 @@ async def clone_text_handler(c: Client, m: Message):
                 ]
             ])
 
+            topic_names = ", ".join([f"**{t.get('title', t['id'])}**" for t in selected_topics[:5]])
+            if len(selected_topics) > 5:
+                topic_names += f" and {len(selected_topics) - 5} more"
+
             await m.reply_text(
-                f"🎯 **{len(selected_topics)} topics selected for cloning.**\n\n"
+                f"🎯 **{len(selected_topics)} topics selected for cloning:**\n"
+                f"{topic_names}\n\n"
                 f"Choose destination to start:",
                 reply_markup=btn
             )
@@ -477,6 +559,10 @@ async def clone_text_handler(c: Client, m: Message):
 async def clone_callback_handler(c: Client, cb: CallbackQuery):
     uid = cb.from_user.id
     data = cb.data
+
+    if data == "clone_noop":
+        await cb.answer()
+        return
 
     # Handle Retry of Failed Tasks even if CLONE_STATE is empty
     if data == "clone_retry_failed":
@@ -507,6 +593,53 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
         await cb.message.edit_text("❌ Clone operation cancelled.")
         return
 
+    elif data.startswith("clone_tpage_"):
+        # Pagination: clone_tpage_{page}_{mode}
+        parts = data.split("_")
+        page = int(parts[2])
+        mode = parts[3]
+        topics = state.get('all_topics', state.get('topics', []))
+        text, markup = build_topics_page_view(topics, page=page, page_size=25, mode=mode)
+        state['current_page'] = page
+        await cb.answer()
+        await cb.message.edit_text(text, reply_markup=markup)
+        return
+
+    elif data == "clone_send_txt_list":
+        topics = state.get('all_topics', state.get('topics', []))
+        chat_title = state.get('chat_title', 'Group')
+        if not topics:
+            await cb.answer("No topics found to export.", show_alert=True)
+            return
+
+        file_name = f"{re.sub(r'[^a-zA-Z0-9_-]', '_', chat_title)}_Topics_List.txt"
+        try:
+            with open(file_name, "w", encoding="utf-8") as f:
+                f.write(f"📁 Group Title: {chat_title}\n")
+                f.write(f"📑 Total Topics: {len(topics)}\n")
+                f.write("=" * 60 + "\n\n")
+                for i, t in enumerate(topics, 1):
+                    f.write(f"{i:3d}. [ID: {t['id']:<8}] {t.get('title', 'Untitled')}\n")
+
+            await cb.answer("Exporting topics file...")
+            await c.send_document(
+                chat_id=uid,
+                document=file_name,
+                caption=(
+                    f"📄 **Full Topics List for '{chat_title}'**\n\n"
+                    f"📑 Total: `{len(topics)}` Topics\n"
+                    f"💡 _You can copy any Topic ID or Number from this file and send it to the bot!_"
+                )
+            )
+        except Exception as e:
+            logger.error(f"Error exporting topics txt: {e}")
+            await cb.answer("Failed to export file.", show_alert=True)
+        finally:
+            if os.path.exists(file_name):
+                try: os.remove(file_name)
+                except: pass
+        return
+
     elif data == "clone_skip_topic_prompt":
         state['step'] = 'waiting_skip_count'
         all_msgs = state.get('all_msg_ids', [])
@@ -525,35 +658,17 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
     elif data == "clone_ignore_topics_prompt":
         topics = state.get('all_topics', state.get('topics', []))
         state['step'] = 'waiting_ignore_topics'
-
-        topics_text = "🚫 **Ignore Topics Setup:**\n\n"
-        for i, t in enumerate(topics[:30], 1):
-            topics_text += f"`{i}.` 🔹 **{t['title']}** (`ID: {t['id']}`)\n"
-
-        if len(topics) > 30:
-            topics_text += f"\n... and {len(topics) - 30} more."
-
-        topics_text += "\n👉 **Send the numbers of topics to IGNORE separated by comma (e.g. `1, 3, 5`):**"
-
+        text, markup = build_topics_page_view(topics, page=1, page_size=25, mode='ignore')
         await cb.answer()
-        await cb.message.edit_text(topics_text)
+        await cb.message.edit_text(text, reply_markup=markup)
         return
 
     elif data == "clone_pick_topic":
         topics = state.get('all_topics', state.get('topics', []))
         state['step'] = 'waiting_topic_number'
-
-        topics_text = "🔢 **Please reply with the number(s) of the topic(s) to clone:**\n\n"
-        for i, t in enumerate(topics[:30], 1):
-            topics_text += f"`{i}.` 🔹 **{t['title']}** (`ID: {t['id']}`)\n"
-
-        if len(topics) > 30:
-            topics_text += f"\n... and {len(topics) - 30} more."
-
-        topics_text += "\n_(You can send a single number like `2` or multiple like `1, 3, 4`)_"
-
+        text, markup = build_topics_page_view(topics, page=1, page_size=25, mode='pick')
         await cb.answer()
-        await cb.message.edit_text(topics_text)
+        await cb.message.edit_text(text, reply_markup=markup)
         return
 
     elif data == "clone_choose_destination":
