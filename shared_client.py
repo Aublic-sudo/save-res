@@ -11,8 +11,8 @@ from pyrogram.errors import FloodWait
 import sys
 
 client = TelegramClient("telethonbot", API_ID, API_HASH)
-app = Client("pyrogrambot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-userbot = Client("4gbbot", api_id=API_ID, api_hash=API_HASH, session_string=STRING)
+app = Client("pyrogrambot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=10)
+userbot = Client("4gbbot", api_id=API_ID, api_hash=API_HASH, session_string=STRING, max_concurrent_transmissions=10)
 
 async def start_client():
     if not client.is_connected():
