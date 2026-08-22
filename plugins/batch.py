@@ -246,7 +246,14 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 return 'Sent directly.'
             
             st = time.time()
-            p = await c.send_message(d, 'Downloading...')
+            p = None
+            try:
+                p = await c.send_message(d, 'Downloading...')
+            except Exception:
+                try:
+                    p = await X.send_message(d, 'Downloading...')
+                except Exception:
+                    p = None
 
             c_name = f"{time.time()}"
             if m.video:
@@ -262,7 +269,12 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 file_name = f"{time.time()}.jpg"
                 c_name = sanitize(file_name)
     
-            f = await u.download_media(m, file_name=c_name, progress=prog, progress_args=(c, d, p.id, st))
+            f = await u.download_media(
+                m,
+                file_name=c_name,
+                progress=prog if p else None,
+                progress_args=(c, d, p.id, st) if p else None
+            )
             
             if not f or not os.path.exists(f):
                 if p:
@@ -308,11 +320,15 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                                         height=h if mtype == 'video' else None,
                                         width=w if mtype == 'video' else None,
                                         caption=ft if m.caption and mtype not in ['video_note', 'voice'] else None, 
-                                        reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
+                                        reply_to_message_id=rtmid,
+                                        progress=prog if p else None,
+                                        progress_args=(c, d, p.id, st) if p else None)
                         break
                 else:
                     sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
-                                                reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
+                                                reply_to_message_id=rtmid,
+                                                progress=prog if p else None,
+                                                progress_args=(c, d, p.id, st) if p else None)
                 
                 await c.copy_message(d, LOG_GROUP, sent.id)
                 if p:
@@ -325,42 +341,68 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 except: pass
             st = time.time()
 
-            try:
+            async def do_upload(client_to_use):
                 if m.video or os.path.splitext(f)[1].lower() == '.mp4':
                     mtd = await get_video_metadata(f)
                     dur, h, w = mtd['duration'], mtd['width'], mtd['height']
                     gen_th = await screenshot(f, dur, d)
-                    if gen_th != user_thumb:
-                        th = gen_th
-                    await c.send_video(tcid, video=f, caption=ft if m.caption else None, 
-                                    thumb=th, width=w, height=h, duration=dur, 
-                                    progress=prog, progress_args=(c, d, p.id, st), 
-                                    reply_to_message_id=rtmid)
+                    th_use = gen_th if gen_th != user_thumb else user_thumb
+                    await client_to_use.send_video(
+                        tcid, video=f, caption=ft if m.caption else None, 
+                        thumb=th_use, width=w, height=h, duration=dur, 
+                        progress=prog if p else None,
+                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        reply_to_message_id=rtmid
+                    )
                 elif m.video_note:
-                    await c.send_video_note(tcid, video_note=f, progress=prog, 
-                                        progress_args=(c, d, p.id, st), reply_to_message_id=rtmid)
+                    await client_to_use.send_video_note(
+                        tcid, video_note=f,
+                        progress=prog if p else None, 
+                        progress_args=(client_to_use, d, p.id, st) if p else None,
+                        reply_to_message_id=rtmid
+                    )
                 elif m.voice:
-                    await c.send_voice(tcid, f, progress=prog, progress_args=(c, d, p.id, st), 
-                                    reply_to_message_id=rtmid)
+                    await client_to_use.send_voice(
+                        tcid, f,
+                        progress=prog if p else None,
+                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        reply_to_message_id=rtmid
+                    )
                 elif m.sticker:
-                    await c.send_sticker(tcid, m.sticker.file_id)
+                    await client_to_use.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
                 elif m.audio:
-                    await c.send_audio(tcid, audio=f, caption=ft if m.caption else None, 
-                                    thumb=th, progress=prog, progress_args=(c, d, p.id, st), 
-                                    reply_to_message_id=rtmid)
+                    await client_to_use.send_audio(
+                        tcid, audio=f, caption=ft if m.caption else None, 
+                        thumb=th, progress=prog if p else None,
+                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        reply_to_message_id=rtmid
+                    )
                 elif m.photo:
-                    await c.send_photo(tcid, photo=f, caption=ft if m.caption else None, 
-                                    progress=prog, progress_args=(c, d, p.id, st), 
-                                    reply_to_message_id=rtmid)
+                    await client_to_use.send_photo(
+                        tcid, photo=f, caption=ft if m.caption else None, 
+                        progress=prog if p else None,
+                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        reply_to_message_id=rtmid
+                    )
                 else:
-                    await c.send_document(tcid, document=f, caption=ft if m.caption else None, 
-                                        progress=prog, progress_args=(c, d, p.id, st), 
-                                        reply_to_message_id=rtmid)
-            except Exception as e:
-                if p:
-                    try: await c.edit_message_text(d, p.id, f'Upload failed: {str(e)[:30]}')
-                    except: pass
-                return f'Failed: {str(e)[:30]}'
+                    await client_to_use.send_document(
+                        tcid, document=f, caption=ft if m.caption else None, 
+                        progress=prog if p else None,
+                        progress_args=(client_to_use, d, p.id, st) if p else None, 
+                        reply_to_message_id=rtmid
+                    )
+
+            try:
+                await do_upload(c)
+            except Exception as upload_err:
+                print(f"Upload via custom bot failed ({upload_err}), trying main bot X...")
+                try:
+                    await do_upload(X)
+                except Exception as fallback_err:
+                    if p:
+                        try: await c.edit_message_text(d, p.id, f'Upload failed: {str(fallback_err)[:30]}')
+                        except: pass
+                    return f'Failed: {str(fallback_err)[:30]}'
             
             if p:
                 try: await c.delete_messages(d, p.id)
@@ -368,7 +410,10 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             return 'Done.'
             
         elif m.text:
-            await c.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
+            try:
+                await c.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
+            except Exception:
+                await X.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
             return 'Sent.'
     except Exception as e:
         return f'Error: {str(e)[:50]}'
