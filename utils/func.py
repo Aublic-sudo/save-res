@@ -370,30 +370,20 @@ async def promote_bot_in_chat(client, chat_id, target_bot):
 
 
 async def ensure_bot_admin(client, chat_id, bot_client=None):
-    """Ensures Main Bot and custom bot are admins in an existing chat."""
-    bots_to_check = []
+    """Ensures user's custom bot is admin in an existing chat (Main Bot remains private/hidden)."""
+    if not bot_client:
+        return False
     try:
-        from shared_client import app as main_app
-        if main_app:
-            bots_to_check.append(main_app)
-    except Exception:
-        pass
-    if bot_client and bot_client not in bots_to_check:
-        bots_to_check.append(bot_client)
-
-    results = []
-    for b in bots_to_check:
-        try:
-            res = await promote_bot_in_chat(client, chat_id, b)
-            results.append(res)
-        except Exception:
-            results.append(False)
-    return any(results)
+        return await promote_bot_in_chat(client, chat_id, bot_client)
+    except Exception as e:
+        logger.error(f"Error ensuring custom bot admin in {chat_id}: {e}")
+        return False
 
 
 async def create_cloned_supergroup(client, bot_client, title, description="", photo_file_id=None):
     """
-    Creates a new supergroup with forum topics enabled, sets photo, and promotes Main Bot + custom bot as admin.
+    Creates a new supergroup with forum topics enabled, sets photo, and promotes custom bot as admin.
+    (Main Bot remains completely hidden and private).
     Returns (new_chat_id, invite_link)
     """
     try:
@@ -444,23 +434,13 @@ async def create_cloned_supergroup(client, bot_client, title, description="", ph
             except Exception as e:
                 logger.error(f"Error setting group photo: {e}")
 
-        # 4. Guarantee both Main Bot (X) and Custom Bot (bot_client) are added and promoted as Admin
-        bots_to_promote = []
-        try:
-            from shared_client import app as main_app
-            if main_app:
-                bots_to_promote.append(main_app)
-        except Exception:
-            pass
-
-        if bot_client and bot_client not in bots_to_promote:
-            bots_to_promote.append(bot_client)
-
-        for b in bots_to_promote:
+        # 4. Promote ONLY the user's custom bot as Admin (Main Bot X is never revealed)
+        if bot_client:
             try:
-                await promote_bot_in_chat(client, new_chat_id, b)
+                await promote_bot_in_chat(client, new_chat_id, bot_client)
+                logger.info(f"Successfully added & promoted custom bot in {new_chat_id}")
             except Exception as e:
-                logger.error(f"Failed to promote bot in new supergroup {new_chat_id}: {e}")
+                logger.error(f"Failed to promote custom bot in new supergroup {new_chat_id}: {e}")
 
         # 5. Export invite link
         invite_link = None

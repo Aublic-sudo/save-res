@@ -355,7 +355,12 @@ async def clone_command_handler(c: Client, m: Message):
 
     ubot = await get_ubot(uid)
     if not ubot:
-        await pro.edit_text("⚠️ Please add your bot using `/setbot <token>` first.")
+        await pro.edit_text(
+            "⚠️ **Custom Bot Required!**\n\n"
+            "Please add your bot token first using:\n"
+            "`/setbot <token>`\n\n"
+            "🔒 _All files and cloned topics will be uploaded through your custom bot so the main bot remains completely hidden!_"
+        )
         return
 
     uc = await get_uclient(uid)
@@ -403,7 +408,15 @@ async def auto_link_handler(c: Client, m: Message):
     if await sub(c, m) == 1:
         return
 
-    ubot = (await get_ubot(uid)) or c
+    ubot = await get_ubot(uid)
+    if not ubot:
+        await m.reply_text(
+            "⚠️ **Custom Bot Required!**\n\n"
+            "Please add your bot token first using:\n"
+            "`/setbot <token>`\n\n"
+            "🔒 _All files and cloned topics will be uploaded through your custom bot so the main bot remains completely hidden!_"
+        )
+        return
 
     uc = await get_uclient(uid)
     if not uc:
@@ -801,9 +814,13 @@ async def run_single_topic_cloning(
     link_type: str
 ):
     """Clones all messages from a single topic with automatic retries and resume support."""
-    ubot = (await get_ubot(uid)) or c
-    uc = await get_uclient(uid)
+    ubot = await get_ubot(uid)
+    if not ubot:
+        await status_msg.edit_text("⚠️ Custom bot not found! Please add your bot using `/setbot <token>` first.")
+        CLONE_STATE.pop(uid, None)
+        return
 
+    uc = await get_uclient(uid)
     if not uc:
         await status_msg.edit_text("❌ Setup missing: User session unavailable. Please /login first.")
         CLONE_STATE.pop(uid, None)
@@ -942,9 +959,13 @@ async def run_full_group_cloning(
     auto_create_new_group: bool = False
 ):
     """Clones all topics from a forum supergroup."""
-    ubot = (await get_ubot(uid)) or c
-    uc = await get_uclient(uid)
+    ubot = await get_ubot(uid)
+    if not ubot:
+        await status_msg.edit_text("⚠️ Custom bot not found! Please add your bot using `/setbot <token>` first.")
+        CLONE_STATE.pop(uid, None)
+        return
 
+    uc = await get_uclient(uid)
     if not uc:
         await status_msg.edit_text("❌ Setup missing: User session unavailable. Please /login first.")
         CLONE_STATE.pop(uid, None)
@@ -1236,9 +1257,13 @@ async def run_normal_channel_cloning(
     link_type: str
 ):
     """Clones messages from a non-forum channel or group."""
-    ubot = (await get_ubot(uid)) or c
-    uc = await get_uclient(uid)
+    ubot = await get_ubot(uid)
+    if not ubot:
+        await status_msg.edit_text("⚠️ Custom bot not found! Please add your bot using `/setbot <token>` first.")
+        CLONE_STATE.pop(uid, None)
+        return
 
+    uc = await get_uclient(uid)
     if not uc:
         await status_msg.edit_text("❌ Setup missing: User session unavailable. Please /login first.")
         CLONE_STATE.pop(uid, None)

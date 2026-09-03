@@ -141,7 +141,7 @@ async def get_ubot(uid):
     if not bt: return None
     if uid in UB: return UB.get(uid)
     try:
-        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH, max_concurrent_transmissions=24, workers=16)
+        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH, max_concurrent_transmissions=4, workers=8)
         await bot.start()
         UB[uid] = bot
         return bot
@@ -159,7 +159,7 @@ async def get_uclient(uid):
     if xxx:
         try:
             ss = dcs(xxx)
-            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, max_concurrent_transmissions=24, workers=16)
+            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, max_concurrent_transmissions=4, workers=8)
             await gg.start()
             await upd_dlg(gg)
             UC[uid] = gg
@@ -352,20 +352,15 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                                                 progress_args=(prog_client, d, p.id, st) if p else None)
                 
                 copied = False
-                for target_client in [c, X]:
-                    if not target_client:
-                        continue
+                try:
+                    await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                    copied = True
+                except Exception:
                     try:
-                        await target_client.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                        await c.copy_message(tcid, LOG_GROUP, sent.id)
                         copied = True
-                        break
-                    except Exception:
-                        try:
-                            await target_client.copy_message(tcid, LOG_GROUP, sent.id)
-                            copied = True
-                            break
-                        except Exception:
-                            pass
+                    except Exception as copy_err:
+                        return f'Large file copy failed via your bot: {str(copy_err)[:35]}'
                 if not copied:
                     return 'Large file copy failed.'
                 if p:
@@ -434,21 +429,14 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                         return await do_upload(client_to_use, reply_id=None)
                     raise up_err
 
-            sent_done = False
             try:
                 await do_upload(c)
-                sent_done = True
             except Exception as upload_err:
-                if not sent_done:
-                    print(f"Upload via custom bot failed ({upload_err}), trying main bot X...")
-                    try:
-                        await do_upload(X)
-                        sent_done = True
-                    except Exception as fallback_err:
-                        if p:
-                            try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(fallback_err)[:30]}')
-                            except: pass
-                        return f'Failed: {str(fallback_err)[:30]}'
+                print(f"Upload via custom bot failed: {upload_err}")
+                if p:
+                    try: await prog_client.edit_message_text(d, p.id, f'Upload failed via your bot: {str(upload_err)[:35]}')
+                    except: pass
+                return f'Failed: {str(upload_err)[:35]}'
             
             if p:
                 try: await prog_client.delete_messages(d, p.id)
@@ -458,8 +446,9 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
         elif m.text:
             try:
                 await c.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
-            except Exception:
-                await X.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
+            except Exception as text_err:
+                print(f"Custom bot text send failed: {text_err}")
+                return f'Failed: {str(text_err)[:35]}'
             return 'Sent.'
     except Exception as e:
         return f'Error: {str(e)[:50]}'
@@ -497,7 +486,12 @@ async def process_cmd(c, m):
     
     ubot = await get_ubot(uid)
     if not ubot:
-        await pro.edit('Add your bot with /setbot first')
+        await pro.edit(
+            "⚠️ **Custom Bot Required!**\n\n"
+            "Please add your bot token first using:\n"
+            "`/setbot <token>`\n\n"
+            "🔒 _All files will be uploaded through your custom bot so the main bot remains completely hidden!_"
+        )
         return
     
     Z[uid] = {'step': 'start' if cmd == 'batch' else 'start_single'}
@@ -568,7 +562,17 @@ async def text_handler(c, m):
         i, s, lt = Z[uid]['cid'], Z[uid]['sid'], Z[uid]['lt']
         pt = await m.reply_text('Processing...')
         
-        ubot = (await get_ubot(uid)) or c
+        ubot = await get_ubot(uid)
+        if not ubot:
+            await pt.edit(
+                "⚠️ **Custom Bot Required!**\n\n"
+                "Please add your bot token first using:\n"
+                "`/setbot <token>`\n\n"
+                "🔒 _All files will be uploaded through your custom bot so the main bot remains completely hidden!_"
+            )
+            Z.pop(uid, None)
+            return
+
         uc = await get_uclient(uid)
         if not uc:
             await pt.edit('⚠️ User session not found. Please /login first.')
@@ -609,9 +613,18 @@ async def text_handler(c, m):
         success = 0
 
         pt = await m.reply_text('Processing batch...')
+        ubot = await get_ubot(uid)
+        if not ubot:
+            await pt.edit(
+                "⚠️ **Custom Bot Required!**\n\n"
+                "Please add your bot token first using:\n"
+                "`/setbot <token>`\n\n"
+                "🔒 _All files will be uploaded through your custom bot so the main bot remains completely hidden!_"
+            )
+            Z.pop(uid, None)
+            return
+
         uc = await get_uclient(uid)
-        ubot = (await get_ubot(uid)) or c
-        
         if not uc:
             await pt.edit('⚠️ User session not found. Please /login first.')
             Z.pop(uid, None)
@@ -653,7 +666,7 @@ async def text_handler(c, m):
                     try: await pt.edit(f'{j+1}/{n}: Error - {str(e)[:30]}')
                     except: pass
                 
-                await asyncio.sleep(10)
+                await asyncio.sleep(1)
             
             if j+1 == n:
                 await m.reply_text(f'Batch Completed ✅ Success: {success}/{n}')

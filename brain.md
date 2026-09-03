@@ -127,40 +127,43 @@ Stores voucher codes for self-service premium activation.
 ## 5. 🔄 Core Workflows & Pipelines
 
 ### A. Smart Topic & Group Cloning (`/clone` / `/topic`)
-1. **Link Intake**: User sends forum supergroup link (e.g., `https://t.me/c/123456789/42` or `https://t.me/groupname`).
-2. **Resolution**: `resolve_tg_chat` resolves the chat peer using user client (`uc`).
-3. **Topic Discovery**: `get_all_forum_topics` scans MTProto for all topics in the forum.
-4. **Interactive Choice**:
+1. **Prerequisite**: User must configure their custom bot using `/setbot <token>`. Main Bot `X` acts purely as command interface and is **never revealed**.
+2. **Link Intake**: User sends forum supergroup link (e.g., `https://t.me/c/123456789/42` or `https://t.me/groupname`).
+3. **Resolution**: `resolve_tg_chat` resolves the chat peer using user client (`uc`).
+4. **Topic Discovery**: `get_all_forum_topics` scans MTProto for all topics in the forum.
+5. **Interactive Choice**:
    - Clone All Topics
    - Select Specific Topic(s)
    - Ignore Specific Topic(s)
-5. **Destination Decision**:
-   - **Auto-Create Cloned Group**: `create_cloned_supergroup` creates a fresh supergroup under `uc`'s account, enables forum mode, copies avatar/title, and **auto-adds and promotes Main Bot (`X`) as Admin with full rights**.
+6. **Destination Decision**:
+   - **Auto-Create Cloned Group**: `create_cloned_supergroup` creates a fresh supergroup under `uc`'s account, enables forum mode, copies avatar/title, and **auto-adds and promotes ONLY the Custom Bot (`ubot`) as Admin**. Main Bot `X` is never added or exposed.
    - **Target Configured Chat**: Uses `chat_id` stored in user settings.
-6. **Execution Loop**:
+7. **Execution Loop**:
    - Fetches message IDs in topic via `get_topic_messages_list`.
    - Creates corresponding destination topic via `create_forum_topic_safe`.
-   - Downloads media using `uc` -> Renames -> Adds thumbnail -> Uploads using `X` -> Cleans up temp disk storage.
+   - Downloads media using `uc` -> Renames -> Adds thumbnail -> Uploads strictly using Custom Bot `ubot` -> Cleans up temp disk storage.
 
-> [!NOTE]
-> **No `/setbot` is needed for `/clone` or `/topic`**: The Main Bot `X` and User Client `uc` perform the entire group cloning operation.
+> [!IMPORTANT]
+> **Zero Main Bot Exposure**: All uploaded files into user chats, channels, and groups are delivered strictly through the user's custom bot (`ubot`).
 
 ---
 
 ### B. Bulk & Single Message Extraction (`/batch` / `/single` / pasted link)
-1. **Target Identification**:
+1. **Mandatory Custom Bot**: User must provide a bot token via `/setbot <token>` first.
+2. **Target Identification**:
    - Reads `chat_id` from user settings.
-   - If `chat_id` is set as `-100CHANNELID/TOPIC_ID`:
-     - Parses `tcid = int(channel_id)` and `rtmid = int(topic_id)`.
-     - File and metadata upload directly to that topic using `reply_to_message_id=rtmid`.
+   - If `chat_id` is set (e.g. `-100CHANNELID` or `-100CHANNELID/TOPIC_ID`):
+     - Uploads directly into that channel or specific topic using Custom Bot `ubot`.
    - If `chat_id` is **NOT set**:
-     - Destination defaults to user's private message (`d = uid`).
-     - **If user configured `/setbot`**: Upload is delivered through their **Custom Bot (`ubot`)**.
-     - **If no custom bot**: Upload is delivered through **Main Bot (`X`)**.
-2. **Large File Handling (> 2GB)**:
+     - Uploads directly into the **Custom Bot's chat with the user** (`ubot.send_video(uid, ...)`).
+3. **Speed & Throughput Optimization (Fixing 8-9s `upload.GetFile` FloodWait)**:
+   - `max_concurrent_transmissions` is tuned to `4` (down from 24). This prevents Telegram from flagging the session with 8-9 second rate limit delays on every chunk.
+   - Batch interval pause reduced from 10 seconds to 1 second.
+   - Upload and download throughput reaches continuous wire speed (3MB/s - 6MB/s).
+4. **Large File Handling (> 2GB)**:
    - Pyrogram bots have a 2GB upload limit.
-   - Files > 2GB use the Userbot (`Y`) to upload to `LOG_GROUP`, then copy to user destination with full topic/thread preservation.
-3. **Local Storage Cleanup**:
+   - Files > 2GB use the Userbot (`Y`) to upload to `LOG_GROUP`, then copy to user destination strictly using Custom Bot `ubot`.
+5. **Local Storage Cleanup**:
    - Every downloaded file and generated thumbnail is strictly wiped in the `finally:` block of `process_msg` and through `cleanup_stray_temp_files()` to prevent VPS disk fill-up.
 
 ---
