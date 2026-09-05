@@ -3,7 +3,7 @@
 # Licensed under the GNU General Public License v3.0.  
 # See LICENSE file in the repository root for full license text.
 
-import os, re, time, asyncio, json, asyncio 
+import os, re, time, asyncio, json, logging
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import UserNotParticipant
@@ -11,7 +11,8 @@ from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMI
 from utils.func import (
     get_user_data, screenshot, thumbnail, get_video_metadata,
     ensure_anonymous_sender, cleanup_stray_temp_files,
-    get_user_data_key, process_text_with_rules, is_premium_user, E
+    get_user_data_key, process_text_with_rules, is_premium_user, E,
+    TOPIC_MSG_CACHE, parse_tg_link
 )
 from shared_client import app as X
 from plugins.settings import rename_file
@@ -19,6 +20,8 @@ from plugins.start import subscribe as sub
 from utils.custom_filters import login_in_progress
 from utils.encrypt import dcs
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 Y = None if not STRING else __import__('shared_client').userbot
@@ -94,50 +97,76 @@ PEER_CACHE = {}
 
 async def get_msg(c, u, i, d, lt):
     try:
+        # Normalize chat_id and msg_id
+        c_raw = str(i).replace('-100', '')
+        norm_cid = int(f"-100{c_raw}") if c_raw.isdigit() else i
+        norm_mid = int(d) if str(d).isdigit() else d
+
+        # 1. First check in-memory TOPIC_MSG_CACHE (pre-cached during topic message discovery)
+        cached_msg = TOPIC_MSG_CACHE.get((norm_cid, norm_mid))
+        if cached_msg and not getattr(cached_msg, 'empty', False):
+            return cached_msg
+
         if lt == 'public':
             try:
-                xm = await c.get_messages(i, d)
+                xm = await c.get_messages(i, norm_mid)
                 emp[i] = getattr(xm, "empty", False)
-                if emp[i]:
+                if emp[i] and u:
                     try: await u.join_chat(i)
                     except: pass
-                    xm = await u.get_messages((await u.get_chat(f"@{i}")).id, d)
-                return xm
+                    chat = await u.get_chat(f"@{i}" if not str(i).startswith('@') else i)
+                    xm = await u.get_messages(chat.id, norm_mid)
+                if xm and not getattr(xm, 'empty', False):
+                    return xm
+                return None
             except Exception as e:
-                print(f'Error fetching public message: {e}')
+                logger.error(f'Error fetching public message: {e}')
                 return None
         else:
             if u:
-                chat_id = i if str(i).startswith('-100') else f'-100{i}' if str(i).isdigit() else i
-                if str(chat_id) in PEER_CACHE:
-                    resolved_id = PEER_CACHE[str(chat_id)]
-                    try:
-                        return await u.get_messages(resolved_id, d)
-                    except Exception:
-                        pass
-
+                # 2. Try direct fetch using normalized integer chat ID
                 try:
-                    peer = await u.resolve_peer(chat_id)
-                    if hasattr(peer, 'channel_id'): resolved_id = f'-100{peer.channel_id}'
-                    elif hasattr(peer, 'chat_id'): resolved_id = f'-{peer.chat_id}'
-                    elif hasattr(peer, 'user_id'): resolved_id = peer.user_id
-                    else: resolved_id = chat_id
-                    PEER_CACHE[str(chat_id)] = resolved_id
-                    return await u.get_messages(resolved_id, d)
+                    xm = await u.get_messages(norm_cid, norm_mid)
+                    if xm and not getattr(xm, 'empty', False):
+                        return xm
                 except Exception:
-                    try:
-                        chat = await u.get_chat(chat_id)
-                        PEER_CACHE[str(chat_id)] = chat.id
-                        return await u.get_messages(chat.id, d)
-                    except Exception:
-                        await upd_dlg(u)
-                        try:
-                            return await u.get_messages(chat_id, d)
-                        except Exception:
-                            return None
+                    pass
+
+                # 3. Ensure peer access_hash is initialized in Pyrogram SQLite cache by fetching chat
+                try:
+                    chat = await u.get_chat(norm_cid)
+                    xm = await u.get_messages(chat.id, norm_mid)
+                    if xm and not getattr(xm, 'empty', False):
+                        return xm
+                except Exception:
+                    pass
+
+                # 4. Fallback: Raw MTProto channels.GetMessages with resolved InputPeer
+                try:
+                    from pyrogram.raw.functions.channels import GetMessages as RawGetMessages
+                    from pyrogram.raw.types import InputMessageID
+                    from pyrogram.methods.messages.get_messages import utils as gutils
+                    peer = await u.resolve_peer(norm_cid)
+                    res = await u.invoke(RawGetMessages(channel=peer, id=[InputMessageID(id=norm_mid)]))
+                    parsed = await gutils.parse_messages(u, res)
+                    if parsed and len(parsed) > 0 and not getattr(parsed[0], 'empty', False):
+                        return parsed[0]
+                except Exception:
+                    pass
+
+                # 5. Last resort: Update dialogs and retry
+                try:
+                    await upd_dlg(u)
+                    xm = await u.get_messages(norm_cid, norm_mid)
+                    if xm and not getattr(xm, 'empty', False):
+                        return xm
+                except Exception:
+                    pass
+
+                return None
             return None
     except Exception as e:
-        print(f'Error fetching message: {e}')
+        logger.error(f'Error fetching message {d}: {e}')
         return None
 
 async def get_ubot(uid):
@@ -284,6 +313,8 @@ async def send_direct(client_to_use, m, tcid, ft=None, rtmid=None):
         return False
 
 async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_override=None):
+    if not m or getattr(m, 'empty', False):
+        return 'Failed: Message is empty or not found.'
     f = None
     th = None
     p = None
@@ -575,9 +606,10 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                     except Exception as fb_err:
                         return f'Failed: {str(fb_err)[:35]}'
                 return f'Failed: {str(text_err)[:35]}'
-            return 'Sent.'
+        elif getattr(m, 'service', False) or getattr(m, 'action', None):
+            return 'Skipped (service/topic action).'
         else:
-            return 'Skipped (service/empty message).'
+            return 'Skipped (unsupported message type).'
     except Exception as e:
         return f'Error: {str(e)[:50]}'
     finally:
@@ -681,11 +713,32 @@ async def text_handler(c, m):
 
     elif s == 'start_single':
         L = m.text
+        parsed_c, parsed_t, parsed_m, parsed_lt = parse_tg_link(L)
         i, d, lt = E(L)
         if not i or not d:
             await m.reply_text('Invalid link format.')
             Z.pop(uid, None)
             return
+
+        # Check if user sent a topic-only link (2 parts in forum)
+        if parsed_t is not None and parsed_m is None:
+            uc_check = await get_uclient(uid)
+            if uc_check:
+                try:
+                    c_raw = str(i).replace('-100', '')
+                    norm_cid = int(f"-100{c_raw}") if c_raw.isdigit() else i
+                    chat_info = await uc_check.get_chat(norm_cid)
+                    if getattr(chat_info, 'is_forum', False):
+                        await m.reply_text(
+                            f"📌 **Forum Topic Link Detected!** (`Topic ID: {parsed_t}`)\n\n"
+                            f"Yeh poore topic ka link hai, kisi akele video ka nahi.\n\n"
+                            f"• **Poora Topic Clone karne ke liye:** `/clone` command use karein aur ye link bhejein.\n"
+                            f"• **Kisi 1 Video ko download karne ke liye:** Topic ke andar us video par tap/right-click karke **Copy Link** karein aur bhejein!"
+                        )
+                        Z.pop(uid, None)
+                        return
+                except Exception:
+                    pass
 
         Z[uid].update({'step': 'process_single', 'cid': i, 'sid': d, 'lt': lt})
         i, s, lt = Z[uid]['cid'], Z[uid]['sid'], Z[uid]['lt']
@@ -716,10 +769,17 @@ async def text_handler(c, m):
         try:
             msg = await get_msg(ubot, uc, i, s, lt)
             if msg:
-                res = await process_msg(ubot, uc, msg, str(m.chat.id), lt, uid, i)
-                await pt.edit(f'1/1: {res}')
+                if getattr(msg, 'service', False) or getattr(msg, 'action', None):
+                    await pt.edit(
+                        f"⚠️ **Service / Action Message!** (Msg ID: `{s}`)\n\n"
+                        f"Yeh message ek system event hai (e.g. Topic Creation / Pin action), isme koi video ya file nahi hai.\n"
+                        f"Topic ke andar maujood video ka link bhejein!"
+                    )
+                else:
+                    res = await process_msg(ubot, uc, msg, str(m.chat.id), lt, uid, i)
+                    await pt.edit(f'1/1: {res}')
             else:
-                await pt.edit('Message not found')
+                await pt.edit('❌ Message not found or empty (Ensure your logged-in account has joined this channel/group).')
         except Exception as e:
             await pt.edit(f'Error: {str(e)[:50]}')
         finally:

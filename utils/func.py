@@ -183,14 +183,22 @@ async def get_all_forum_topics(client, chat_id):
     return topics
 
 
+TOPIC_MSG_CACHE = {}
+
+
 async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
     """
     Fetches all message IDs belonging to a specific forum topic.
     Returns message IDs ordered from oldest to newest.
     """
+    global TOPIC_MSG_CACHE
     msg_ids = []
+    c_raw = str(chat_id).replace('-100', '')
+    norm_cid = int(f"-100{c_raw}") if c_raw.isdigit() else chat_id
+
     try:
         from pyrogram.raw.functions.messages import GetReplies
+        from pyrogram.methods.messages.get_messages import utils as gutils
         peer = await client.resolve_peer(chat_id)
         offset_id = 0
         limit = 100
@@ -213,10 +221,21 @@ async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
             if not raw_msgs:
                 break
             
-            for rm in raw_msgs:
-                mid = getattr(rm, 'id', None)
-                if mid and not getattr(rm, 'empty', False):
-                    msg_ids.append(mid)
+            # Parse messages into Pyrogram Message objects using client
+            try:
+                parsed_list = await gutils.parse_messages(client, res)
+                for pm in parsed_list:
+                    if pm and not getattr(pm, 'empty', False):
+                        TOPIC_MSG_CACHE[(norm_cid, pm.id)] = pm
+                        if pm.id not in msg_ids:
+                            msg_ids.append(pm.id)
+            except Exception as pe:
+                logger.warning(f"Error parsing topic messages with gutils: {pe}")
+                for rm in raw_msgs:
+                    mid = getattr(rm, 'id', None)
+                    if mid and not getattr(rm, 'empty', False):
+                        if mid not in msg_ids:
+                            msg_ids.append(mid)
             
             if len(raw_msgs) < limit:
                 break
@@ -234,6 +253,7 @@ async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
             async for m in client.get_chat_history(chat_id, limit=max_count or 1000):
                 m_tid = getattr(m, 'message_thread_id', None) or getattr(m, 'reply_to_top_message_id', None)
                 if m_tid == topic_id or (topic_id == 1 and m_tid is None):
+                    TOPIC_MSG_CACHE[(norm_cid, m.id)] = m
                     msg_ids.append(m.id)
         except Exception as ex:
             logger.error(f"Fallback get_chat_history error for topic {topic_id}: {ex}")
