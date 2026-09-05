@@ -594,46 +594,18 @@ def sanitize_filename(filename):
 
 def cleanup_stray_temp_files():
     """
-    Cleans up any stray media or temp files in root and downloads directories
-    to prevent Render VPS storage and memory from getting full.
+    Cleans up any stray media or temp files in root directory to preserve Render/cloud storage.
     """
     try:
         now = time.time()
-        targets = [".", "downloads"]
-        
-        for base_dir in targets:
-            if not os.path.exists(base_dir):
-                continue
-            try:
-                entries = os.listdir(base_dir)
-            except Exception:
-                continue
-                
-            for fname in entries:
-                fpath = os.path.join(base_dir, fname)
-                if not os.path.isfile(fpath):
-                    continue
-                # Never touch session or persistent database files
-                if fname.endswith(('.session', '.session-journal')) or fname.startswith(('thumb_', 'settings')):
-                    continue
-                
-                # 1. Immediately remove temporary/incomplete files
-                if fname.endswith(('.temp', '.part', '.tmp', '.download')):
-                    try:
-                        os.remove(fpath)
-                    except Exception:
-                        pass
-                    continue
-                
-                # 2. Remove orphan media files older than 45 seconds
-                if fname.lower().endswith(('.mp4', '.mkv', '.mp3', '.jpg', '.jpeg', '.pdf', '.bin', '.webp', '.ogg', '.wav', '.flac', '.zip')):
-                    try:
-                        if now - os.path.getmtime(fpath) > 45:
-                            os.remove(fpath)
-                    except Exception:
-                        pass
-        import gc
-        gc.collect()
+        for f in os.listdir("."):
+            if f.endswith(('.mp4', '.mkv', '.mp3', '.jpg', '.jpeg', '.pdf', '.bin', '.part', '.tmp', '.webp')) and not f.startswith(('settings', 'thumb')):
+                try:
+                    # If file is older than 3 minutes, remove it
+                    if now - os.path.getmtime(f) > 180:
+                        os.remove(f)
+                except Exception:
+                    pass
     except Exception as e:
         logger.error(f"Error in cleanup_stray_temp_files: {e}")
 

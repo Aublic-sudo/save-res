@@ -162,20 +162,15 @@ Stores voucher codes for self-service premium activation.
      - Uploads directly into that channel or specific topic **anonymously via `uc`** (`is_anonymous=True`, `set_send_as_chat`). The post appears with the Group/Channel's PFP and title.
    - If `chat_id` is **NOT set**:
      - Uploads directly into the **Custom Bot's chat with the user** in PM (`ubot.send_video(uid, ...)`).
-3. **Speed & Throughput Optimization (Eliminating the 0.36 MB/s Bottleneck & FloodWaits)**:
-   - **Native C-Accelerated Crypto Engine (`utils/crypto_patch.py`)**: Automatically forces `tgcrypto` (Native C Extension) or OpenSSL C-bindings (`cryptography` / `pycryptodome`) for all MTProto encryption/decryption. Prevents silent fallback to pure-Python `pyaes` (which previously capped speeds at ~0.36 MB/s).
-   - **Dockerfile C-Build Dependencies**: Added `build-essential gcc g++ python3-dev libffi-dev libssl-dev` to `Dockerfile` so that C extensions compile natively during container deployment on Render.
-   - **Non-Blocking Progress Engine**: Converted the `prog` callback into a non-blocking background dispatcher throttled to >= 2.5s. Transmission loops never pause waiting for Telegram message editing round-trips.
-   - **FloodWait Elimination**: User client `max_concurrent_transmissions` is set to `1` with `sleep_threshold=60` to eliminate concurrent session requests that trigger 8-9s `upload.GetFile` FloodWaits.
-   - **Net Throughput**: Reaches continuous wire speed (3 MB/s - 6+ MB/s).
+3. **Speed & Throughput Optimization (Fixing 8-9s `upload.GetFile` FloodWait)**:
+   - `max_concurrent_transmissions` is tuned to `4` (down from 24). This prevents Telegram from flagging the session with 8-9 second rate limit delays on every chunk.
+   - Batch interval pause reduced from 10 seconds to 1 second.
+   - Upload and download throughput reaches continuous wire speed (3MB/s - 6MB/s).
 4. **Large File Handling (> 2GB)**:
    - Pyrogram bots have a 2GB upload limit.
    - Files > 2GB use the Userbot (`Y`) to upload to `LOG_GROUP`, then copy to user destination anonymously via `uc` (with fallback to `ubot`).
-5. **Render VPS Local Storage Protection (Zero Disk Leaks)**:
-   - Every downloaded file is immediately deleted upon upload completion right inside `process_msg`.
-   - In `finally:`, all media files, `.temp` partial download files, and thumbnails are purged.
-   - `cleanup_stray_temp_files()` sweeps both root `.` and `downloads/` directories.
-   - A background watchdog task (`periodic_storage_cleaner`) runs every 60 seconds in `main.py` to guarantee Render VPS ephemeral disk never gets full.
+5. **Local Storage Cleanup**:
+   - Every downloaded file and generated thumbnail is strictly wiped in the `finally:` block of `process_msg` and through `cleanup_stray_temp_files()` to prevent VPS disk fill-up.
 
 ---
 

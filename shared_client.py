@@ -3,7 +3,6 @@
 # Licensed under the GNU General Public License v3.0.  
 # See LICENSE file in the repository root for full license text.
 
-import utils.crypto_patch
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from config import API_ID, API_HASH, BOT_TOKEN, STRING
@@ -12,8 +11,8 @@ from pyrogram.errors import FloodWait
 import sys
 
 client = TelegramClient("telethonbot", API_ID, API_HASH)
-app = Client("pyrogrambot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, sleep_threshold=60, workers=16)
-userbot = Client("4gbbot", api_id=API_ID, api_hash=API_HASH, session_string=STRING, sleep_threshold=60, max_concurrent_transmissions=1, workers=16)
+app = Client("pyrogrambot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=4, workers=16)
+userbot = Client("4gbbot", api_id=API_ID, api_hash=API_HASH, session_string=STRING, max_concurrent_transmissions=4, workers=16)
 
 async def start_client():
     if not client.is_connected():

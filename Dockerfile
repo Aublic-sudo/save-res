@@ -3,8 +3,8 @@ FROM python:3.10-slim-bookworm
 # Update packages
 RUN apt-get update && apt-get upgrade -y
 
-# Install required packages with C-extension build dependencies for maximum speed
-RUN apt-get install -y git curl wget bash neofetch ffmpeg software-properties-common build-essential gcc g++ python3-dev libffi-dev libssl-dev
+# Install required packages (duplicate installs remove kiye)
+RUN apt-get install -y git curl wget bash neofetch ffmpeg software-properties-common
 
 # Working directory
 WORKDIR /app
