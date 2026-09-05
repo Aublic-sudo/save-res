@@ -16,7 +16,8 @@ from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMI
 from utils.func import (
     get_user_data, get_user_data_key, is_premium_user,
     parse_tg_link, get_all_forum_topics, get_topic_messages_list,
-    create_forum_topic_safe, create_cloned_supergroup, ensure_bot_admin, cleanup_stray_temp_files, E
+    create_forum_topic_safe, create_cloned_supergroup, ensure_bot_admin,
+    ensure_anonymous_sender, cleanup_stray_temp_files, E
 )
 from shared_client import app as X
 from plugins.start import subscribe as sub
@@ -861,6 +862,12 @@ async def run_single_topic_cloning(
             else:
                 target_override = int(dest_chat)
 
+        if target_override:
+            try:
+                await ensure_anonymous_sender(uc, target_override)
+            except Exception:
+                pass
+
         for idx, mid in enumerate(msg_ids, 1):
             if should_cancel(uid):
                 await status_msg.edit_text(
@@ -1032,6 +1039,10 @@ async def run_full_group_cloning(
                 await ensure_bot_admin(uc, base_target_chat, ubot)
             except Exception:
                 pass
+            try:
+                await ensure_anonymous_sender(uc, base_target_chat)
+            except Exception:
+                pass
 
         try:
             dest_obj = await uc.get_chat(base_target_chat)
@@ -1163,6 +1174,12 @@ async def run_retry_failed_cloning(c: Client, uid: int, status_msg: Message, tas
     link_type = task_info.get('link_type', 'private')
     target_override = task_info.get('target_override')
     topic_override = task_info.get('topic_override')
+
+    if target_override:
+        try:
+            await ensure_anonymous_sender(uc, target_override)
+        except Exception:
+            pass
 
     if not failed_ids:
         await status_msg.edit_text("✅ No failed messages to retry.")
@@ -1309,6 +1326,12 @@ async def run_normal_channel_cloning(
             topic_override = int(parts[1]) if len(parts) > 1 else None
         else:
             target_override = int(dest_chat)
+
+    if target_override:
+        try:
+            await ensure_anonymous_sender(uc, target_override)
+        except Exception:
+            pass
 
     try:
         for idx, mid in enumerate(msg_ids, 1):

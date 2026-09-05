@@ -89,8 +89,8 @@ The codebase operates with **four distinct client roles**:
 | **`app` / `X`** | Pyrogram | Main Bot (`BOT_TOKEN`) | Core command handling (`/start`, `/batch`, `/clone`), progress bars, public downloads, upload fallback, forum group management. |
 | **`client` / `gf`** | Telethon | Main Bot (`BOT_TOKEN`) | Telethon inline buttons for `/settings`, Spylib fast upload/download hooks, `/status`, `/transfer`. |
 | **`userbot` / `Y`** | Pyrogram | Optional Shared Userbot (`STRING`) | Fallback global session if user has not logged in with their own session. |
-| **`uc` (`Client`)** | Pyrogram | User's Personal Session (`session_string`) | Created dynamically when a user logs in via `/login`. Reads private channels, creates cloned supergroups, creates forum topics. |
-| **`ubot` (`UB[uid]`)** | Pyrogram | User's Custom Bot (`bot_token`) | Created dynamically if user ran `/setbot`. Dedicated file delivery bot for that user's private batch/single downloads. |
+| **`uc` (`Client`)** | Pyrogram | User's Personal Session (`session_string`) | Created dynamically when a user logs in via `/login`. Reads private channels, creates cloned supergroups/topics, and uploads anonymously into groups/channels displaying the Group's PFP and title (owner mode). |
+| **`ubot` (`UB[uid]`)** | Pyrogram | User's Custom Bot (`bot_token`) | Created dynamically if user ran `/setbot`. Dedicated file delivery bot for that user's private PM downloads. |
 
 ---
 
@@ -127,7 +127,7 @@ Stores voucher codes for self-service premium activation.
 ## 5. 🔄 Core Workflows & Pipelines
 
 ### A. Smart Topic & Group Cloning (`/clone` / `/topic`)
-1. **Prerequisite**: User must configure their custom bot using `/setbot <token>`. Main Bot `X` acts purely as command interface and is **never revealed**.
+1. **Prerequisite**: User must configure their custom bot using `/setbot <token>` (for PM delivery & command callbacks) and session using `/login`. Main Bot `X` acts purely as command interface and is **never revealed**.
 2. **Link Intake**: User sends forum supergroup link (e.g., `https://t.me/c/123456789/42` or `https://t.me/groupname`).
 3. **Resolution**: `resolve_tg_chat` resolves the chat peer using user client (`uc`).
 4. **Topic Discovery**: `get_all_forum_topics` scans MTProto for all topics in the forum.
@@ -136,33 +136,33 @@ Stores voucher codes for self-service premium activation.
    - Select Specific Topic(s)
    - Ignore Specific Topic(s)
 6. **Destination Decision**:
-   - **Auto-Create Cloned Group**: `create_cloned_supergroup` creates a fresh supergroup under `uc`'s account, enables forum mode, copies avatar/title, and **auto-adds and promotes ONLY the Custom Bot (`ubot`) as Admin**. Main Bot `X` is never added or exposed.
+   - **Auto-Create Cloned Group**: `create_cloned_supergroup` creates a fresh supergroup under `uc`'s account, enables forum mode, copies avatar/title, auto-configures owner as **Anonymous Admin (`is_anonymous=True`, `set_send_as_chat`)**, and promotes Custom Bot (`ubot`) as Admin for fallback.
    - **Target Configured Chat**: Uses `chat_id` stored in user settings.
 7. **Execution Loop**:
    - Fetches message IDs in topic via `get_topic_messages_list`.
    - Creates corresponding destination topic via `create_forum_topic_safe`.
-   - Downloads media using `uc` -> Renames -> Adds thumbnail -> Uploads strictly using Custom Bot `ubot` -> Cleans up temp disk storage.
+   - Downloads media using `uc` -> Renames -> Adds thumbnail -> Uploads into destination chat **strictly via `uc` anonymously** (messages appear with the Group's profile photo and title, zero bot/user profile shown) -> Cleans up temp disk storage.
 
 > [!IMPORTANT]
-> **Zero Main Bot Exposure**: All uploaded files into user chats, channels, and groups are delivered strictly through the user's custom bot (`ubot`).
+> **Zero Bot & User Identity Exposure in Chats**: All uploaded files into user chats, channels, and groups are delivered strictly as the **Group Identity** itself (Anonymous Owner mode). No bot profiles or user personal profiles are ever shown.
 
 ---
 
 ### B. Bulk & Single Message Extraction (`/batch` / `/single` / pasted link)
-1. **Mandatory Custom Bot**: User must provide a bot token via `/setbot <token>` first.
-2. **Target Identification**:
+1. **Setup**: User logs in with `/login` and provides a bot token via `/setbot <token>`.
+2. **Target Identification & Sender Identity**:
    - Reads `chat_id` from user settings.
    - If `chat_id` is set (e.g. `-100CHANNELID` or `-100CHANNELID/TOPIC_ID`):
-     - Uploads directly into that channel or specific topic using Custom Bot `ubot`.
+     - Uploads directly into that channel or specific topic **anonymously via `uc`** (`is_anonymous=True`, `set_send_as_chat`). The post appears with the Group/Channel's PFP and title.
    - If `chat_id` is **NOT set**:
-     - Uploads directly into the **Custom Bot's chat with the user** (`ubot.send_video(uid, ...)`).
+     - Uploads directly into the **Custom Bot's chat with the user** in PM (`ubot.send_video(uid, ...)`).
 3. **Speed & Throughput Optimization (Fixing 8-9s `upload.GetFile` FloodWait)**:
    - `max_concurrent_transmissions` is tuned to `4` (down from 24). This prevents Telegram from flagging the session with 8-9 second rate limit delays on every chunk.
    - Batch interval pause reduced from 10 seconds to 1 second.
    - Upload and download throughput reaches continuous wire speed (3MB/s - 6MB/s).
 4. **Large File Handling (> 2GB)**:
    - Pyrogram bots have a 2GB upload limit.
-   - Files > 2GB use the Userbot (`Y`) to upload to `LOG_GROUP`, then copy to user destination strictly using Custom Bot `ubot`.
+   - Files > 2GB use the Userbot (`Y`) to upload to `LOG_GROUP`, then copy to user destination anonymously via `uc` (with fallback to `ubot`).
 5. **Local Storage Cleanup**:
    - Every downloaded file and generated thumbnail is strictly wiped in the `finally:` block of `process_msg` and through `cleanup_stray_temp_files()` to prevent VPS disk fill-up.
 

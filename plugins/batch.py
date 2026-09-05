@@ -8,7 +8,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import UserNotParticipant
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
-from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata
+from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata, ensure_anonymous_sender
 from utils.func import get_user_data_key, process_text_with_rules, is_premium_user, E
 from shared_client import app as X
 from plugins.settings import rename_file
@@ -205,30 +205,47 @@ async def prog(c, t, C, h, m, st):
     except Exception:
         pass
 
-async def send_direct(c, m, tcid, ft=None, rtmid=None):
+def is_chat_target(target_id, user_id=None):
+    """Checks if the destination is a group or channel rather than a user PM."""
+    if not target_id:
+        return False
+    try:
+        tid = int(str(target_id).split('/')[0].strip())
+        if tid < 0:
+            return True
+    except Exception:
+        pass
+    t_str = str(target_id).strip()
+    if t_str.startswith('-'):
+        return True
+    if user_id is not None and str(target_id) != str(user_id):
+        return True
+    return False
+
+async def send_direct(client_to_use, m, tcid, ft=None, rtmid=None):
     try:
         if m.video:
-            await c.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
+            await client_to_use.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
         elif m.video_note:
-            await c.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
+            await client_to_use.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
         elif m.voice:
-            await c.send_voice(tcid, m.voice.file_id, reply_to_message_id=rtmid)
+            await client_to_use.send_voice(tcid, m.voice.file_id, reply_to_message_id=rtmid)
         elif m.sticker:
-            await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
+            await client_to_use.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
         elif m.audio:
-            await c.send_audio(tcid, m.audio.file_id, caption=ft, duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
+            await client_to_use.send_audio(tcid, m.audio.file_id, caption=ft, duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
         elif m.photo:
             photo_id = m.photo.file_id if hasattr(m.photo, 'file_id') else m.photo[-1].file_id
-            await c.send_photo(tcid, photo_id, caption=ft, reply_to_message_id=rtmid)
+            await client_to_use.send_photo(tcid, photo_id, caption=ft, reply_to_message_id=rtmid)
         elif m.document:
-            await c.send_document(tcid, m.document.file_id, caption=ft, file_name=m.document.file_name, reply_to_message_id=rtmid)
+            await client_to_use.send_document(tcid, m.document.file_id, caption=ft, file_name=m.document.file_name, reply_to_message_id=rtmid)
         else:
             return False
         return True
     except Exception as e:
         if rtmid:
             try:
-                return await send_direct(c, m, tcid, ft=ft, rtmid=None)
+                return await send_direct(client_to_use, m, tcid, ft=ft, rtmid=None)
             except Exception:
                 pass
         print(f'Direct send error: {e}')
@@ -256,6 +273,20 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
         if topic_override is not None:
             rtmid = topic_override
         
+        # Determine uploader client:
+        # When uploading to a target chat ID (group/channel), use user client 'u' (uc)
+        # with anonymous admin rights so that the message appears as sent by the group
+        # itself with the group's profile photo and title (owner mode).
+        is_chat = is_chat_target(tcid, d)
+        if is_chat and u:
+            uploader = u
+            try:
+                await ensure_anonymous_sender(u, tcid)
+            except Exception as e_anon:
+                print(f"Notice: ensure_anonymous_sender in {tcid}: {e_anon}")
+        else:
+            uploader = c if c else u
+        
         if m.media:
             orig_text = m.caption.markdown if m.caption else ''
             proc_text = await process_text_with_rules(d, orig_text)
@@ -263,8 +294,9 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             ft = f'{proc_text}\n\n{user_cap}' if proc_text and user_cap else user_cap if user_cap else proc_text
             
             if lt == 'public' and not emp.get(i, False):
-                await send_direct(c, m, tcid, ft, rtmid)
-                return 'Sent directly.'
+                direct_ok = await send_direct(uploader, m, tcid, ft, rtmid)
+                if direct_ok:
+                    return 'Sent directly.'
             
             st = time.time()
             p = None
@@ -353,14 +385,23 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 
                 copied = False
                 try:
-                    await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                    await uploader.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
                     copied = True
                 except Exception:
                     try:
-                        await c.copy_message(tcid, LOG_GROUP, sent.id)
+                        await uploader.copy_message(tcid, LOG_GROUP, sent.id)
                         copied = True
-                    except Exception as copy_err:
-                        return f'Large file copy failed via your bot: {str(copy_err)[:35]}'
+                    except Exception:
+                        if uploader != c and c:
+                            try:
+                                await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                                copied = True
+                            except Exception:
+                                try:
+                                    await c.copy_message(tcid, LOG_GROUP, sent.id)
+                                    copied = True
+                                except Exception as copy_err:
+                                    return f'Large file copy failed: {str(copy_err)[:35]}'
                 if not copied:
                     return 'Large file copy failed.'
                 if p:
@@ -430,13 +471,24 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                     raise up_err
 
             try:
-                await do_upload(c)
+                await do_upload(uploader)
             except Exception as upload_err:
-                print(f"Upload via custom bot failed: {upload_err}")
-                if p:
-                    try: await prog_client.edit_message_text(d, p.id, f'Upload failed via your bot: {str(upload_err)[:35]}')
-                    except: pass
-                return f'Failed: {str(upload_err)[:35]}'
+                if uploader != c and c:
+                    try:
+                        print(f"Upload via user client failed: {upload_err}, falling back to custom bot...")
+                        await do_upload(c)
+                    except Exception as bot_err:
+                        print(f"Upload fallback failed: {bot_err}")
+                        if p:
+                            try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(bot_err)[:35]}')
+                            except: pass
+                        return f'Failed: {str(bot_err)[:35]}'
+                else:
+                    print(f"Upload failed: {upload_err}")
+                    if p:
+                        try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(upload_err)[:35]}')
+                        except: pass
+                    return f'Failed: {str(upload_err)[:35]}'
             
             if p:
                 try: await prog_client.delete_messages(d, p.id)
@@ -445,9 +497,20 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             
         elif m.text:
             try:
-                await c.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
+                await uploader.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
             except Exception as text_err:
-                print(f"Custom bot text send failed: {text_err}")
+                if rtmid is not None:
+                    try:
+                        await uploader.send_message(tcid, text=m.text.markdown)
+                        return 'Sent.'
+                    except Exception:
+                        pass
+                if uploader != c and c:
+                    try:
+                        await c.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
+                        return 'Sent.'
+                    except Exception as fb_err:
+                        return f'Failed: {str(fb_err)[:35]}'
                 return f'Failed: {str(text_err)[:35]}'
             return 'Sent.'
     except Exception as e:

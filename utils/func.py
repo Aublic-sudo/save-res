@@ -369,6 +369,119 @@ async def promote_bot_in_chat(client, chat_id, target_bot):
         return False
 
 
+_ANON_CACHE = set()
+
+async def ensure_anonymous_sender(client, chat_id):
+    """
+    Ensures that when client (user session) posts into chat_id,
+    the message appears as sent by the group/channel itself
+    (with the group's profile photo and title, hiding the uploader's identity).
+    """
+    if not client:
+        return False
+    
+    # Extract base chat id if format is "-100.../topic_id"
+    raw_cid = str(chat_id).split('/')[0].strip()
+    try:
+        cid = int(raw_cid)
+    except Exception:
+        cid = raw_cid
+    
+    # Check if chat is a group or channel (negative ID)
+    if isinstance(cid, int) and cid > 0:
+        return False
+
+    cache_key = (getattr(client, 'name', 'user'), str(cid))
+    if cache_key in _ANON_CACHE:
+        return True
+
+    success = False
+
+    # 1. Try to set default send_as to the chat itself (Works for channels and groups where user can send as chat)
+    try:
+        await client.set_send_as_chat(cid, cid)
+        logger.info(f"set_send_as_chat successful for {cid}")
+        success = True
+    except Exception as e_sendas:
+        logger.debug(f"set_send_as_chat notice for {cid}: {e_sendas}")
+
+    # 2. Try to enable 'Remain Anonymous' (is_anonymous=True) for user in supergroup
+    try:
+        from pyrogram.types import ChatPrivileges
+        await client.promote_chat_member(
+            cid,
+            "me",
+            privileges=ChatPrivileges(
+                can_manage_chat=True,
+                can_delete_messages=True,
+                can_manage_video_chats=True,
+                can_restrict_members=True,
+                can_promote_members=True,
+                can_change_info=True,
+                can_invite_users=True,
+                can_pin_messages=True,
+                can_manage_topics=True,
+                can_post_messages=True,
+                can_edit_messages=True,
+                is_anonymous=True
+            )
+        )
+        logger.info(f"Promoted self as anonymous admin in {cid}")
+        success = True
+    except Exception as e_promo:
+        logger.debug(f"Pyrogram promote_chat_member anonymous notice for {cid}: {e_promo}")
+
+    # 3. Try MTProto EditAdmin with anonymous=True (Direct MTProto invoke)
+    try:
+        from pyrogram.raw.functions.channels import EditAdmin
+        from pyrogram.raw.types import ChatAdminRights
+        channel_peer = await client.resolve_peer(cid)
+        me_peer = await client.resolve_peer("me")
+        await client.invoke(
+            EditAdmin(
+                channel=channel_peer,
+                user_id=me_peer,
+                admin_rights=ChatAdminRights(
+                    change_info=True,
+                    post_messages=True,
+                    edit_messages=True,
+                    delete_messages=True,
+                    ban_users=True,
+                    invite_users=True,
+                    pin_messages=True,
+                    add_admins=True,
+                    anonymous=True,
+                    manage_call=True,
+                    other=True,
+                    manage_topics=True
+                ),
+                rank=""
+            )
+        )
+        logger.info(f"MTProto EditAdmin anonymous=True successful in {cid}")
+        success = True
+    except Exception as e_mt:
+        logger.debug(f"MTProto EditAdmin anonymous notice for {cid}: {e_mt}")
+
+    # 4. If channel, ensure admin signatures are disabled so admin name is never signed
+    try:
+        from pyrogram.raw.functions.channels import ToggleSignatures
+        channel_peer = await client.resolve_peer(cid)
+        await client.invoke(ToggleSignatures(channel=channel_peer, enabled=False))
+        logger.info(f"Disabled admin signatures for {cid}")
+    except Exception:
+        pass
+
+    # 5. Re-try set_send_as_chat in case anonymous promotion just unlocked it
+    try:
+        await client.set_send_as_chat(cid, cid)
+    except Exception:
+        pass
+
+    _ANON_CACHE.add(cache_key)
+    return success
+
+
 async def ensure_bot_admin(client, chat_id, bot_client=None):
     """Ensures user's custom bot is admin in an existing chat (Main Bot remains private/hidden)."""
     if not bot_client:
@@ -442,7 +555,14 @@ async def create_cloned_supergroup(client, bot_client, title, description="", ph
             except Exception as e:
                 logger.error(f"Failed to promote custom bot in new supergroup {new_chat_id}: {e}")
 
-        # 5. Export invite link
+        # 5. Enable Anonymous Admin and Group Identity for the user account (owner)
+        try:
+            await ensure_anonymous_sender(client, new_chat_id)
+            logger.info(f"Configured anonymous group sender identity for {new_chat_id}")
+        except Exception as e_anon:
+            logger.warning(f"Failed to configure anonymous sender for {new_chat_id}: {e_anon}")
+
+        # 6. Export invite link
         invite_link = None
         try:
             invite_link = await client.export_chat_invite_link(new_chat_id)
