@@ -1027,9 +1027,14 @@ async def run_single_topic_cloning(
                         target_override=target_override,
                         topic_override=topic_override
                     )
-                    if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                    print(f"[TOPIC CLONE] Msg {mid} result: {res}")
+                    logger.info(f"[TOPIC CLONE] Msg {mid} result: {res}")
+                    if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly', 'Skipped']):
                         success += 1
                         cloned = True
+                else:
+                    print(f"[TOPIC CLONE] Msg {mid} not found or empty")
+                    logger.warning(f"[TOPIC CLONE] Msg {mid} not found or empty")
             except FloodWait as e:
                 logger.warning(f"FloodWait hit: sleeping for {e.value + 1}s")
                 await asyncio.sleep(e.value + 1)
@@ -1251,9 +1256,14 @@ async def run_full_group_cloning(
                             target_override=base_target_chat,
                             topic_override=dest_topic_id
                         )
-                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
+                        print(f"[GROUP CLONE] Topic {t_id} Msg {mid} result: {res}")
+                        logger.info(f"[GROUP CLONE] Topic {t_id} Msg {mid} result: {res}")
+                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly', 'Skipped']):
                             total_cloned += 1
                             cloned = True
+                    else:
+                        print(f"[GROUP CLONE] Topic {t_id} Msg {mid} not found or empty")
+                        logger.warning(f"[GROUP CLONE] Topic {t_id} Msg {mid} not found or empty")
                 except FloodWait as e:
                     logger.warning(f"FloodWait hit in group clone: sleeping for {e.value + 1}s")
                     await asyncio.sleep(e.value + 1)

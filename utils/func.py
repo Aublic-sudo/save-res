@@ -617,18 +617,19 @@ def cleanup_stray_temp_files():
                 if fname.endswith(('.session', '.session-journal')) or fname.startswith(('thumb_', 'settings')):
                     continue
                 
-                # 1. Immediately remove temporary/incomplete files
+                # 1. Only remove stale temporary/incomplete files older than 3 minutes (active downloads must not be deleted!)
                 if fname.endswith(('.temp', '.part', '.tmp', '.download')):
                     try:
-                        os.remove(fpath)
+                        if now - os.path.getmtime(fpath) > 180:
+                            os.remove(fpath)
                     except Exception:
                         pass
                     continue
                 
-                # 2. Remove orphan media files older than 45 seconds
+                # 2. Remove orphan media files older than 2 minutes
                 if fname.lower().endswith(('.mp4', '.mkv', '.mp3', '.jpg', '.jpeg', '.pdf', '.bin', '.webp', '.ogg', '.wav', '.flac', '.zip')):
                     try:
-                        if now - os.path.getmtime(fpath) > 45:
+                        if now - os.path.getmtime(fpath) > 120:
                             os.remove(fpath)
                     except Exception:
                         pass

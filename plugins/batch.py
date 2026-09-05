@@ -207,7 +207,14 @@ async def prog(c, t, C, h, m, st):
         bar = '🟢' * int(pct / 10) + '🔴' * (10 - int(pct / 10))
         elapsed = now - st
         speed = c / elapsed / (1024 * 1024) if elapsed > 0 else 0
-        eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
+        try:
+            remaining_bytes = max(0, t - c)
+            speed_bytes = speed * 1024 * 1024
+            rem_secs = int(remaining_bytes / speed_bytes) if speed_bytes > 0 else 0
+            rem_secs = min(max(0, rem_secs), 86400)
+            eta = time.strftime('%M:%S', time.gmtime(rem_secs))
+        except Exception:
+            eta = '00:00'
         
         text = (
             f"__**Pyro Handler...**__\n\n"
@@ -299,18 +306,9 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             rtmid = topic_override
         
         # Determine uploader client:
-        # When uploading to a target chat ID (group/channel), use user client 'u' (uc)
-        # with anonymous admin rights so that the message appears as sent by the group
-        # itself with the group's profile photo and title (owner mode).
-        is_chat = is_chat_target(tcid, d)
-        if is_chat and u:
-            uploader = u
-            try:
-                await ensure_anonymous_sender(u, tcid)
-            except Exception as e_anon:
-                print(f"Notice: ensure_anonymous_sender in {tcid}: {e_anon}")
-        else:
-            uploader = c if c else u
+        # Prioritize custom bot 'c' (configured via /setbot) to keep main bot hidden.
+        # Fallback to user client 'u' if custom bot is not available.
+        uploader = c if c else u
         
         if m.media:
             orig_text = m.caption.markdown if m.caption else ''
@@ -349,18 +347,25 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 file_name = f"{time.time()}.jpg"
                 c_name = sanitize(file_name)
     
-            f = await u.download_media(
-                m,
-                file_name=c_name,
-                progress=prog if p else None,
-                progress_args=(prog_client, d, p.id, st) if p else None
-            )
-            
+            dl_err_str = None
+            try:
+                f = await u.download_media(
+                    m,
+                    file_name=c_name,
+                    progress=prog if p else None,
+                    progress_args=(prog_client, d, p.id, st) if p else None
+                )
+            except Exception as dl_err:
+                dl_err_str = str(dl_err)
+                print(f"[DOWNLOAD ERROR] Msg {getattr(m, 'id', 'unknown')}: {dl_err}")
+
             if not f or not os.path.exists(f):
+                err_text = f"Download failed: {dl_err_str[:30]}" if dl_err_str else "Download failed."
+                print(f"[DOWNLOAD] File {c_name} not available: {err_text}")
                 if p:
-                    try: await prog_client.edit_message_text(d, p.id, 'Failed.')
+                    try: await prog_client.edit_message_text(d, p.id, err_text)
                     except: pass
-                return 'Failed.'
+                return err_text
             
             if p:
                 try: await prog_client.edit_message_text(d, p.id, 'Renaming...')
@@ -502,19 +507,20 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                     try: os.remove(f)
                     except Exception: pass
             except Exception as upload_err:
-                if uploader != c and c:
+                alt_uploader = u if uploader == c else c
+                if alt_uploader:
                     try:
-                        print(f"Upload via user client failed: {upload_err}, falling back to custom bot...")
-                        await do_upload(c)
+                        print(f"Upload via {uploader} failed: {upload_err}, falling back to alternative client...")
+                        await do_upload(alt_uploader)
                         if f and os.path.exists(f):
                             try: os.remove(f)
                             except Exception: pass
-                    except Exception as bot_err:
-                        print(f"Upload fallback failed: {bot_err}")
+                    except Exception as fb_err:
+                        print(f"Upload fallback failed: {fb_err}")
                         if p:
-                            try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(bot_err)[:35]}')
+                            try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(fb_err)[:35]}')
                             except: pass
-                        return f'Failed: {str(bot_err)[:35]}'
+                        return f'Failed: {str(fb_err)[:35]}'
                 else:
                     print(f"Upload failed: {upload_err}")
                     if p:
@@ -537,18 +543,21 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                         return 'Sent.'
                     except Exception:
                         pass
-                if uploader != c and c:
+                alt_client = u if uploader == c else c
+                if alt_client:
                     try:
-                        await c.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
+                        await alt_client.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
                         return 'Sent.'
                     except Exception as fb_err:
                         return f'Failed: {str(fb_err)[:35]}'
                 return f'Failed: {str(text_err)[:35]}'
             return 'Sent.'
+        else:
+            return 'Skipped (service/empty message).'
     except Exception as e:
         return f'Error: {str(e)[:50]}'
     finally:
-        # GUARANTEED IMMEDIATE CLEANUP OF LOCAL FILE, TEMPS, AND GENERATED THUMBNAIL
+        # GUARANTEED IMMEDIATE CLEANUP OF LOCAL FILE AND GENERATED THUMBNAIL
         if f and os.path.exists(f):
             try:
                 os.remove(f)
@@ -560,20 +569,6 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 os.remove(th)
             except Exception:
                 pass
-        # Also clean up any matching .temp files for c_name
-        try:
-            if 'c_name' in locals() and c_name:
-                for base_dir in [".", "downloads"]:
-                    temp_f = os.path.join(base_dir, f"{c_name}.temp")
-                    if os.path.exists(temp_f):
-                        try: os.remove(temp_f)
-                        except Exception: pass
-                    orig_f = os.path.join(base_dir, c_name)
-                    if os.path.exists(orig_f):
-                        try: os.remove(orig_f)
-                        except Exception: pass
-        except Exception:
-            pass
         cleanup_stray_temp_files()
         import gc
         gc.collect()
