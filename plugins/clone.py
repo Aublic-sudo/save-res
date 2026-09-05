@@ -244,20 +244,33 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
         state['all_msg_ids'] = list(msg_ids)
         state['topic_title'] = f"Topic #{topic_id}"
 
-        btn = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(f"▶️ Start from Beginning ({len(msg_ids)})", callback_data="clone_start_topic"),
-            ],
-            [
-                InlineKeyboardButton("⏭️ Resume / Skip First X", callback_data="clone_skip_topic_prompt"),
-                InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
-            ]
+        btn_rows = []
+        if msg_id is not None and msg_ids:
+            if msg_id in msg_ids:
+                s_idx = msg_ids.index(msg_id)
+                r_msgs = msg_ids[s_idx:]
+            else:
+                r_msgs = [m for m in msg_ids if m >= msg_id]
+            if r_msgs:
+                btn_rows.append([
+                    InlineKeyboardButton(f"▶️ Resume from Msg #{msg_id} ({len(r_msgs)})", callback_data=f"clone_start_from_{msg_id}")
+                ])
+
+        btn_rows.append([
+            InlineKeyboardButton(f"▶️ Start from Beginning ({len(msg_ids)})", callback_data="clone_start_topic")
+        ])
+        btn_rows.append([
+            InlineKeyboardButton("⏭️ Resume / Start from Link", callback_data="clone_skip_topic_prompt"),
+            InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
         ])
 
+        btn = InlineKeyboardMarkup(btn_rows)
+
+        resume_info = f"\n🎯 **Resume target:** Msg `{msg_id}`" if msg_id else ""
         await status_msg.edit_text(
             f"📌 **Forum Topic Detected!**\n\n"
             f"📁 **Group:** {chat_title}\n"
-            f"🏷️ **Topic ID:** `{topic_id}`\n"
+            f"🏷️ **Topic ID:** `{topic_id}`{resume_info}\n"
             f"📊 **Messages Found:** `{len(msg_ids)}`\n\n"
             f"Choose an option to start cloning:",
             reply_markup=btn
@@ -446,36 +459,115 @@ async def clone_text_handler(c: Client, m: Message):
 
     elif step == 'waiting_skip_count':
         input_val = m.text.strip()
-        if not input_val.isdigit():
-            await m.reply_text("❌ Please send a valid number (e.g. `21` to skip the first 21 messages).")
-            return
-        
-        skip_count = int(input_val)
         all_msg_ids = state.get('all_msg_ids', [])
         if not all_msg_ids:
             all_msg_ids = state.get('msg_ids', [])
             state['all_msg_ids'] = list(all_msg_ids)
 
-        if skip_count >= len(all_msg_ids):
-            await m.reply_text(f"❌ Skip count ({skip_count}) is greater than or equal to total messages ({len(all_msg_ids)}).")
+        if not all_msg_ids:
+            await m.reply_text("❌ No messages found in this topic to filter.")
             return
 
-        state['msg_ids'] = all_msg_ids[skip_count:]
-        topic_title = state.get('topic_title', 'Topic')
-        chat_title = state.get('chat_title', '')
+        target_mid = None
+        is_skip_number = False
+        skip_count = 0
+
+        # 1. Check if input is a Telegram link
+        if any(d in input_val for d in ['t.me/', 'telegram.me/', 'telegram.dog/']):
+            parsed_chat, parsed_topic, parsed_msg, parsed_lt = parse_tg_link(input_val)
+            if parsed_msg is not None:
+                target_mid = parsed_msg
+            elif parsed_topic is not None:
+                target_mid = parsed_topic
+            else:
+                await m.reply_text(
+                    "❌ **Invalid Message Link!**\n\n"
+                    "Please provide a link pointing to a specific message, e.g.:\n"
+                    "`https://t.me/c/2884241848/44514/49768`"
+                )
+                return
+
+            # If user pasted a link for a different topic, try to update topic if possible
+            if parsed_topic and state.get('topic_id') and parsed_topic != state.get('topic_id'):
+                try:
+                    uc = await get_uclient(uid)
+                    new_msgs = await get_topic_messages_list(uc, state['chat_id'], parsed_topic)
+                    if new_msgs:
+                        state['topic_id'] = parsed_topic
+                        state['topic_title'] = f"Topic #{parsed_topic}"
+                        all_msg_ids = new_msgs
+                        state['all_msg_ids'] = list(new_msgs)
+                except Exception as e_fetch:
+                    logger.warning(f"Could not switch topic to {parsed_topic}: {e_fetch}")
+
+        # 2. Check if input is a digit
+        elif input_val.isdigit():
+            val = int(input_val)
+            # Check if this val is an exact message ID in the topic
+            if val in all_msg_ids:
+                target_mid = val
+            elif val < len(all_msg_ids):
+                # User sent a skip count (e.g. 49 to skip first 49 messages)
+                is_skip_number = True
+                skip_count = val
+            else:
+                # Check if val is a message ID greater than min msg_id
+                target_mid = val
+        else:
+            await m.reply_text(
+                "❌ **Invalid Input!**\n\n"
+                "Please send either:\n"
+                "1. Message link: `https://t.me/c/2884241848/44514/49768`\n"
+                "2. Number of messages to skip (e.g. `49`)"
+            )
+            return
+
+        # 3. Calculate remaining messages
+        if is_skip_number:
+            if skip_count >= len(all_msg_ids):
+                await m.reply_text(f"❌ Skip count (`{skip_count}`) is greater than or equal to total messages (`{len(all_msg_ids)}`).")
+                return
+            remaining_msgs = all_msg_ids[skip_count:]
+            start_label = f"Message #{remaining_msgs[0]} (Index {skip_count + 1})"
+            skipped_label = f"`{skip_count}` messages"
+        else:
+            if target_mid in all_msg_ids:
+                start_idx = all_msg_ids.index(target_mid)
+                remaining_msgs = all_msg_ids[start_idx:]
+            else:
+                # Filter all messages >= target_mid
+                remaining_msgs = [mid for mid in all_msg_ids if mid >= target_mid]
+            
+            if not remaining_msgs:
+                await m.reply_text(
+                    f"❌ **Message not found in this topic!**\n\n"
+                    f"Message ID `{target_mid}` is higher than the latest message in this topic (`{max(all_msg_ids)}`).\n"
+                    f"Please check your link and try again."
+                )
+                return
+            
+            skipped_count = len(all_msg_ids) - len(remaining_msgs)
+            start_label = f"Message ID `{remaining_msgs[0]}`"
+            skipped_label = f"`{skipped_count}` messages"
+
+        state['msg_ids'] = remaining_msgs
+        topic_title = state.get('topic_title', f"Topic #{state.get('topic_id')}")
+        chat_title = state.get('chat_title', 'Group')
 
         btn = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"▶️ Start Cloning ({len(state['msg_ids'])} msgs)", callback_data="clone_start_topic"),
+                InlineKeyboardButton(f"▶️ Start Cloning ({len(remaining_msgs)} msgs)", callback_data="clone_start_topic"),
                 InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
             ]
         ])
 
         await m.reply_text(
-            f"⏭️ **Skipped first {skip_count} messages!**\n\n"
+            f"✅ **Resume Position Set!**\n\n"
             f"📁 **Group:** {chat_title}\n"
             f"📂 **Topic:** {topic_title}\n"
-            f"📊 **Remaining Messages to Clone:** `{len(state['msg_ids'])}`\n\n"
+            f"🎯 **Starting From:** {start_label}\n"
+            f"⏭️ **Skipped:** {skipped_label}\n"
+            f"📊 **Remaining to Clone:** `{len(remaining_msgs)}` messages\n\n"
             f"Ready to proceed?",
             reply_markup=btn
         )
@@ -544,7 +636,7 @@ async def clone_text_handler(c: Client, m: Message):
                     InlineKeyboardButton(f"▶️ Start from Beginning ({len(msg_ids)})", callback_data="clone_start_topic"),
                 ],
                 [
-                    InlineKeyboardButton("⏭️ Resume / Skip First X", callback_data="clone_skip_topic_prompt"),
+                    InlineKeyboardButton("⏭️ Resume / Start from Link", callback_data="clone_skip_topic_prompt"),
                     InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")
                 ]
             ])
@@ -674,11 +766,20 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
             all_msgs = state.get('msg_ids', [])
             state['all_msg_ids'] = list(all_msgs)
         await cb.answer()
+        topic_title = state.get('topic_title', f"Topic #{state.get('topic_id')}")
+        chat_title = state.get('chat_title', 'Group')
         await cb.message.edit_text(
-            f"🔢 **Resume / Skip Setup:**\n\n"
-            f"Total messages available: `{len(all_msgs)}`\n\n"
-            f"👉 **Send the number of messages to skip:**\n"
-            f"_(For example, send `21` to skip the first 21 already downloaded videos and start from #22)_"
+            f"🔗 **Resume Topic Cloning:**\n\n"
+            f"📁 **Group:** {chat_title}\n"
+            f"📂 **Topic:** {topic_title}\n"
+            f"📊 **Total Messages in Topic:** `{len(all_msgs)}`\n\n"
+            f"👉 **Jnha se start karna hai, wo message ka link bhejo:**\n"
+            f"_(Example: `https://t.me/c/2884241848/44514/49768`)_\n\n"
+            f"💡 _Is link ka message aur iske baad ke sabhi videos/messages topic me upload ho jayenge._\n\n"
+            f"_(Tip: Aap direct number bhi bhej sakte hain, jaise `49` to skip first 49 messages)_",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="clone_cancel")]
+            ])
         )
         return
 
@@ -751,6 +852,43 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
                 topics=topics,
                 link_type=link_type,
                 auto_create_new_group=is_new_group
+            )
+        )
+        return
+
+    elif data.startswith("clone_start_from_"):
+        mid = int(data.replace("clone_start_from_", ""))
+        all_msgs = state.get('all_msg_ids', state.get('msg_ids', []))
+        if mid in all_msgs:
+            s_idx = all_msgs.index(mid)
+            state['msg_ids'] = all_msgs[s_idx:]
+        else:
+            state['msg_ids'] = [m for m in all_msgs if m >= mid]
+
+        await cb.answer(f"Resuming from message #{mid}...")
+        topic_id = state.get('topic_id')
+        topic_title = state.get('topic_title', f'Topic {topic_id}')
+        msg_ids = state.get('msg_ids', [])
+        chat_id = state.get('chat_id')
+        chat_title = state.get('chat_title', str(chat_id))
+        link_type = state.get('link_type', 'private')
+
+        if not msg_ids:
+            await cb.message.edit_text("⚠️ No messages found starting from this message ID.")
+            CLONE_STATE.pop(uid, None)
+            return
+
+        asyncio.create_task(
+            run_single_topic_cloning(
+                c=c,
+                uid=uid,
+                status_msg=cb.message,
+                chat_id=chat_id,
+                chat_title=chat_title,
+                topic_id=topic_id,
+                topic_title=topic_title,
+                msg_ids=msg_ids,
+                link_type=link_type
             )
         )
         return

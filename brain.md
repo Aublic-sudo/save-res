@@ -142,6 +142,12 @@ Stores voucher codes for self-service premium activation.
    - Fetches message IDs in topic via `get_topic_messages_list`.
    - Creates corresponding destination topic via `create_forum_topic_safe`.
    - Downloads media using `uc` -> Renames -> Adds thumbnail -> Uploads into destination chat **strictly via `uc` anonymously** (messages appear with the Group's profile photo and title, zero bot/user profile shown) -> Cleans up temp disk storage.
+8. **Resume from Link & Partial Topic Cloning**:
+   - When cloning a single topic, users can click **`⏭️ Resume / Start from Link`**.
+   - The bot prompts for the link of the message to start from (e.g. `https://t.me/c/2884241848/44514/49768`).
+   - The engine extracts `message_id` (`49768`) and slices the message queue to start from that specific video/message and process all subsequent messages in the topic.
+   - Also accepts skip counts (e.g. `49` to skip the first 49 messages).
+   - If a 3-part message link (`.../topic_id/msg_id`) is pasted directly on intake, an instant **`▶️ Resume from Msg #...`** button is displayed.
 
 > [!IMPORTANT]
 > **Zero Bot & User Identity Exposure in Chats**: All uploaded files into user chats, channels, and groups are delivered strictly as the **Group Identity** itself (Anonymous Owner mode). No bot profiles or user personal profiles are ever shown.
