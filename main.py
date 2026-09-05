@@ -1,10 +1,21 @@
 
+import utils.crypto_patch
 import asyncio
 from shared_client import start_client, app, client, userbot
 from pyrogram import idle
 import importlib
 import os
 import sys
+
+async def periodic_storage_cleaner():
+    """Background watchdog that runs every 60s to ensure Render VPS storage never gets full."""
+    from utils.func import cleanup_stray_temp_files
+    while True:
+        try:
+            await asyncio.sleep(60)
+            cleanup_stray_temp_files()
+        except Exception:
+            pass
 
 async def load_and_run_plugins():
     await start_client()
@@ -18,6 +29,7 @@ async def load_and_run_plugins():
             await getattr(module, f"run_{plugin}_plugin")()  
 
 async def main():
+    asyncio.create_task(periodic_storage_cleaner())
     await load_and_run_plugins()
     print("Bot is up and running!")
     await idle()

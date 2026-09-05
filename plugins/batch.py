@@ -8,8 +8,11 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import UserNotParticipant
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
-from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata, ensure_anonymous_sender
-from utils.func import get_user_data_key, process_text_with_rules, is_premium_user, E
+from utils.func import (
+    get_user_data, screenshot, thumbnail, get_video_metadata,
+    ensure_anonymous_sender, cleanup_stray_temp_files,
+    get_user_data_key, process_text_with_rules, is_premium_user, E
+)
 from shared_client import app as X
 from plugins.settings import rename_file
 from plugins.start import subscribe as sub
@@ -20,6 +23,7 @@ from typing import Dict, Any, Optional
 
 Y = None if not STRING else __import__('shared_client').userbot
 Z, P, UB, UC, emp = {}, {}, {}, {}, {}
+EDIT_TASKS: Dict[str, asyncio.Task] = {}
 
 ACTIVE_USERS = {}
 ACTIVE_USERS_FILE = "active_users.json"
@@ -141,7 +145,7 @@ async def get_ubot(uid):
     if not bt: return None
     if uid in UB: return UB.get(uid)
     try:
-        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH, max_concurrent_transmissions=4, workers=8)
+        bot = Client(f"user_{uid}", bot_token=bt, api_id=API_ID, api_hash=API_HASH, sleep_threshold=60, workers=16)
         await bot.start()
         UB[uid] = bot
         return bot
@@ -159,7 +163,8 @@ async def get_uclient(uid):
     if xxx:
         try:
             ss = dcs(xxx)
-            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, max_concurrent_transmissions=4, workers=8)
+            # max_concurrent_transmissions=1 prevents simultaneous GetFile requests on single user sessions that cause 8-9s flood waits
+            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, sleep_threshold=60, max_concurrent_transmissions=1, workers=16)
             await gg.start()
             await upd_dlg(gg)
             UC[uid] = gg
@@ -169,39 +174,59 @@ async def get_uclient(uid):
             return ubot if ubot else Y
     return Y
 
-async def prog(c, t, C, h, m, st):
-    global P
+async def _bg_edit_progress(client, chat_id, message_id, text):
     try:
-        pct = c / t * 100
+        await client.edit_message_text(chat_id, message_id, text)
+    except Exception:
+        pass
+
+async def prog(c, t, C, h, m, st):
+    global P, EDIT_TASKS
+    try:
+        if not t or t <= 0:
+            return
+        pct = (c / t) * 100
         key = f"{h}_{m}"
         now = time.time()
         
-        last_time, last_step = P.get(key, (0, -1))
-        step = int(pct // 5) * 5
+        last_time, _ = P.get(key, (0, 0))
         
-        if (now - last_time >= 1.5) or step != last_step or pct >= 100:
-            P[key] = (now, step)
-            c_mb = c / (1024 * 1024)
-            t_mb = t / (1024 * 1024)
-            bar = '🟢' * int(pct / 10) + '🔴' * (10 - int(pct / 10))
-            elapsed = now - st
-            speed = c / elapsed / (1024 * 1024) if elapsed > 0 else 0
-            eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
-            try:
-                await C.edit_message_text(
-                    h, m,
-                    f"__**Pyro Handler...**__\n\n"
-                    f"{bar}\n\n"
-                    f"⚡ **__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n"
-                    f"📊 **__Done__**: {pct:.2f}%\n"
-                    f"🚀 **__Speed__**: {speed:.2f} MB/s\n"
-                    f"⏳ **__ETA__**: {eta}\n\n"
-                    f"**__Powered by Rixie__**"
-                )
-            except Exception:
-                pass
-            if pct >= 100:
-                P.pop(key, None)
+        # Throttle edits to at least 2.5 seconds to eliminate Telegram rate limits & maximize bandwidth
+        if (now - last_time < 2.5) and pct < 100:
+            return
+            
+        # If an edit task is already in-flight for this message, skip this tick to not queue up edits
+        current_task = EDIT_TASKS.get(key)
+        if current_task and not current_task.done():
+            if pct < 100:
+                return
+            
+        P[key] = (now, pct)
+        c_mb = c / (1024 * 1024)
+        t_mb = t / (1024 * 1024)
+        bar = '🟢' * int(pct / 10) + '🔴' * (10 - int(pct / 10))
+        elapsed = now - st
+        speed = c / elapsed / (1024 * 1024) if elapsed > 0 else 0
+        eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
+        
+        text = (
+            f"__**Pyro Handler...**__\n\n"
+            f"{bar}\n\n"
+            f"⚡ **__Completed__**: {c_mb:.2f} MB / {t_mb:.2f} MB\n"
+            f"📊 **__Done__**: {pct:.2f}%\n"
+            f"🚀 **__Speed__**: {speed:.2f} MB/s\n"
+            f"⏳ **__ETA__**: {eta}\n\n"
+            f"**__Powered by Rixie__**"
+        )
+        
+        # Dispatch edit in background task so download/upload loop NEVER blocks!
+        loop = asyncio.get_running_loop()
+        edit_task = loop.create_task(_bg_edit_progress(C, h, m, text))
+        EDIT_TASKS[key] = edit_task
+        
+        if pct >= 100:
+            P.pop(key, None)
+            EDIT_TASKS.pop(key, None)
     except Exception:
         pass
 
@@ -472,11 +497,18 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
 
             try:
                 await do_upload(uploader)
+                # Immediately remove downloaded file upon successful upload to safeguard Render VPS storage
+                if f and os.path.exists(f):
+                    try: os.remove(f)
+                    except Exception: pass
             except Exception as upload_err:
                 if uploader != c and c:
                     try:
                         print(f"Upload via user client failed: {upload_err}, falling back to custom bot...")
                         await do_upload(c)
+                        if f and os.path.exists(f):
+                            try: os.remove(f)
+                            except Exception: pass
                     except Exception as bot_err:
                         print(f"Upload fallback failed: {bot_err}")
                         if p:
@@ -516,7 +548,7 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
     except Exception as e:
         return f'Error: {str(e)[:50]}'
     finally:
-        # GUARANTEED CLEANUP OF LOCAL FILE AND GENERATED THUMBNAIL
+        # GUARANTEED IMMEDIATE CLEANUP OF LOCAL FILE, TEMPS, AND GENERATED THUMBNAIL
         if f and os.path.exists(f):
             try:
                 os.remove(f)
@@ -528,6 +560,21 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 os.remove(th)
             except Exception:
                 pass
+        # Also clean up any matching .temp files for c_name
+        try:
+            if 'c_name' in locals() and c_name:
+                for base_dir in [".", "downloads"]:
+                    temp_f = os.path.join(base_dir, f"{c_name}.temp")
+                    if os.path.exists(temp_f):
+                        try: os.remove(temp_f)
+                        except Exception: pass
+                    orig_f = os.path.join(base_dir, c_name)
+                    if os.path.exists(orig_f):
+                        try: os.remove(orig_f)
+                        except Exception: pass
+        except Exception:
+            pass
+        cleanup_stray_temp_files()
         import gc
         gc.collect()
 
