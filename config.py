@@ -24,8 +24,21 @@ MONGO_DB = os.getenv("MONGO_DB", "")
 OWNER_ID = list(map(int, os.getenv("OWNER_ID", "").split())) # list seperated via space
 DB_NAME = os.getenv("DB_NAME", "telegram_downloader")
 STRING = os.getenv("STRING", None) # optional
-LOG_GROUP = int(os.getenv("LOG_GROUP", "-1003742844503")) # optional with -100
-FORCE_SUB = int(os.getenv("FORCE_SUB", "-1003742844503")) # optional with -100
+def _parse_optional_id(val):
+    if not val:
+        return None
+    val = str(val).strip()
+    if val.lower() in ("none", "false", "0", ""):
+        return None
+    if val in ("-1003742844503", "1003742844503"):
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        return None
+
+LOG_GROUP = _parse_optional_id(os.getenv("LOG_GROUP", None)) # optional with -100
+FORCE_SUB = _parse_optional_id(os.getenv("FORCE_SUB", None)) # optional with -100
 MASTER_KEY = os.getenv("MASTER_KEY", "") # for session encryption
 IV_KEY = os.getenv("IV_KEY", "") # for decryption
 YT_COOKIES = os.getenv("YT_COOKIES", YTUB_COOKIES)

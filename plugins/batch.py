@@ -397,10 +397,11 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                             'voice': Y.send_voice, 'audio': Y.send_audio, 
                             'photo': Y.send_photo, 'document': Y.send_document}
                 
+                target_chat = LOG_GROUP if LOG_GROUP else tcid
                 for mtype, func in send_funcs.items():
                     if f.endswith('.mp4'): mtype = 'video'
                     if getattr(m, mtype, None):
-                        sent = await func(LOG_GROUP, f, thumb=th if mtype == 'video' else None, 
+                        sent = await func(target_chat, f, thumb=th if mtype == 'video' else None, 
                                         duration=dur if mtype == 'video' else None,
                                         height=h if mtype == 'video' else None,
                                         width=w if mtype == 'video' else None,
@@ -409,31 +410,32 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                                         progress_args=(prog_client, d, p.id, st) if p else None)
                         break
                 else:
-                    sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
+                    sent = await Y.send_document(target_chat, f, thumb=th, caption=ft if m.caption else None,
                                                 progress=prog if p else None,
                                                 progress_args=(prog_client, d, p.id, st) if p else None)
                 
-                copied = False
-                try:
-                    await uploader.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
-                    copied = True
-                except Exception:
+                if target_chat == LOG_GROUP and LOG_GROUP != tcid:
+                    copied = False
                     try:
-                        await uploader.copy_message(tcid, LOG_GROUP, sent.id)
+                        await uploader.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
                         copied = True
                     except Exception:
-                        if uploader != c and c:
-                            try:
-                                await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
-                                copied = True
-                            except Exception:
+                        try:
+                            await uploader.copy_message(tcid, LOG_GROUP, sent.id)
+                            copied = True
+                        except Exception:
+                            if uploader != c and c:
                                 try:
-                                    await c.copy_message(tcid, LOG_GROUP, sent.id)
+                                    await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
                                     copied = True
-                                except Exception as copy_err:
-                                    return f'Large file copy failed: {str(copy_err)[:35]}'
-                if not copied:
-                    return 'Large file copy failed.'
+                                except Exception:
+                                    try:
+                                        await c.copy_message(tcid, LOG_GROUP, sent.id)
+                                        copied = True
+                                    except Exception as copy_err:
+                                        return f'Large file copy failed: {str(copy_err)[:35]}'
+                    if not copied:
+                        return 'Large file copy failed.'
                 if p:
                     try: await prog_client.delete_messages(d, p.id)
                     except: pass
