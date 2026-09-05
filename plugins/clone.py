@@ -240,39 +240,21 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
 
         await status_msg.edit_text(f"⏳ Fetching messages inside Topic `{topic_id}`...")
         msg_ids = await get_topic_messages_list(uc, resolved_id, topic_id)
-
-        # Smart fallback: if 2-part link returned 0 messages in forum, check if topic_id was actually a message inside a topic!
-        if not msg_ids and is_forum and msg_id is None:
-            try:
-                single_m = await uc.get_messages(resolved_id, topic_id)
-                real_tid = getattr(single_m, 'message_thread_id', None) or getattr(single_m, 'reply_to_top_message_id', None) or getattr(single_m, 'reply_to_message_id', None)
-                if real_tid and real_tid != topic_id:
-                    actual_mid = topic_id
-                    topic_id = real_tid
-                    msg_id = actual_mid
-                    state['topic_id'] = topic_id
-                    msg_ids = await get_topic_messages_list(uc, resolved_id, topic_id)
-            except Exception as e_res:
-                logger.warning(f"Fallback forum message resolution error: {e_res}")
-
         state['msg_ids'] = msg_ids
         state['all_msg_ids'] = list(msg_ids)
         state['topic_title'] = f"Topic #{topic_id}"
 
         btn_rows = []
-        if msg_id is not None:
-            if msg_ids and msg_id in msg_ids:
+        if msg_id is not None and msg_ids:
+            if msg_id in msg_ids:
                 s_idx = msg_ids.index(msg_id)
                 r_msgs = msg_ids[s_idx:]
-            elif msg_ids:
-                r_msgs = [m for m in msg_ids if m >= msg_id]
-                if not r_msgs:
-                    r_msgs = [msg_id]
             else:
-                r_msgs = [msg_id]
-            btn_rows.append([
-                InlineKeyboardButton(f"▶️ Resume from Msg #{msg_id} ({len(r_msgs)})", callback_data=f"clone_start_from_{msg_id}")
-            ])
+                r_msgs = [m for m in msg_ids if m >= msg_id]
+            if r_msgs:
+                btn_rows.append([
+                    InlineKeyboardButton(f"▶️ Resume from Msg #{msg_id} ({len(r_msgs)})", callback_data=f"clone_start_from_{msg_id}")
+                ])
 
         btn_rows.append([
             InlineKeyboardButton(f"▶️ Start from Beginning ({len(msg_ids)})", callback_data="clone_start_topic")
@@ -429,13 +411,6 @@ async def auto_link_handler(c: Client, m: Message):
     if uid in Z:
         return
 
-    # If user is in an active clone step (e.g. sent resume link), pass directly to clone_text_handler!
-    if uid in CLONE_STATE:
-        state = CLONE_STATE[uid]
-        step = state.get('step')
-        if step in ('waiting_skip_count', 'waiting_topic_number', 'waiting_ignore_topics'):
-            return await clone_text_handler(c, m)
-
     if is_user_active(uid):
         await m.reply_text("⚠️ You already have an active task running. Use `/stop` to cancel it.")
         return
@@ -512,6 +487,19 @@ async def clone_text_handler(c: Client, m: Message):
                 )
                 return
 
+            # If user pasted a link for a different topic, try to update topic if possible
+            if parsed_topic and state.get('topic_id') and parsed_topic != state.get('topic_id'):
+                try:
+                    uc = await get_uclient(uid)
+                    new_msgs = await get_topic_messages_list(uc, state['chat_id'], parsed_topic)
+                    if new_msgs:
+                        state['topic_id'] = parsed_topic
+                        state['topic_title'] = f"Topic #{parsed_topic}"
+                        all_msg_ids = new_msgs
+                        state['all_msg_ids'] = list(new_msgs)
+                except Exception as e_fetch:
+                    logger.warning(f"Could not switch topic to {parsed_topic}: {e_fetch}")
+
         # 2. Check if input is a digit
         elif input_val.isdigit():
             val = int(input_val)
@@ -523,13 +511,14 @@ async def clone_text_handler(c: Client, m: Message):
                 is_skip_number = True
                 skip_count = val
             else:
+                # Check if val is a message ID greater than min msg_id
                 target_mid = val
         else:
             await m.reply_text(
                 "❌ **Invalid Input!**\n\n"
                 "Please send either:\n"
                 "1. Message link: `https://t.me/c/2884241848/44514/49768`\n"
-                "2. Number of messages to skip (e.g. `5`)"
+                "2. Number of messages to skip (e.g. `49`)"
             )
             return
 
@@ -548,18 +537,16 @@ async def clone_text_handler(c: Client, m: Message):
             else:
                 # Filter all messages >= target_mid
                 remaining_msgs = [mid for mid in all_msg_ids if mid >= target_mid]
-                if not remaining_msgs:
-                    if target_mid > all_msg_ids[-1]:
-                        await m.reply_text(
-                            f"❌ **Message ID #{target_mid} not found!**\n\n"
-                            f"Is topic me latest message ID #{all_msg_ids[-1]} hai.\n"
-                            f"Total messages: `{len(all_msg_ids)}` (ID `{all_msg_ids[0]}` se `{all_msg_ids[-1]}` tak).\n\n"
-                            f"Kripya inke beech ka message ID ya link bhejein!"
-                        )
-                        return
-                    remaining_msgs = [target_mid]
             
-            skipped_count = max(0, len(all_msg_ids) - len(remaining_msgs))
+            if not remaining_msgs:
+                await m.reply_text(
+                    f"❌ **Message not found in this topic!**\n\n"
+                    f"Message ID `{target_mid}` is higher than the latest message in this topic (`{max(all_msg_ids)}`).\n"
+                    f"Please check your link and try again."
+                )
+                return
+            
+            skipped_count = len(all_msg_ids) - len(remaining_msgs)
             start_label = f"Message ID `{remaining_msgs[0]}`"
             skipped_label = f"`{skipped_count}` messages"
 
@@ -877,8 +864,6 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
             state['msg_ids'] = all_msgs[s_idx:]
         else:
             state['msg_ids'] = [m for m in all_msgs if m >= mid]
-            if not state['msg_ids']:
-                state['msg_ids'] = [mid]
 
         await cb.answer(f"Resuming from message #{mid}...")
         topic_id = state.get('topic_id')
@@ -1042,14 +1027,9 @@ async def run_single_topic_cloning(
                         target_override=target_override,
                         topic_override=topic_override
                     )
-                    print(f"[TOPIC CLONE] Msg {mid} result: {res}")
-                    logger.info(f"[TOPIC CLONE] Msg {mid} result: {res}")
-                    if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly', 'Skipped']):
+                    if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
                         success += 1
                         cloned = True
-                else:
-                    print(f"[TOPIC CLONE] Msg {mid} not found or empty")
-                    logger.warning(f"[TOPIC CLONE] Msg {mid} not found or empty")
             except FloodWait as e:
                 logger.warning(f"FloodWait hit: sleeping for {e.value + 1}s")
                 await asyncio.sleep(e.value + 1)
@@ -1271,14 +1251,9 @@ async def run_full_group_cloning(
                             target_override=base_target_chat,
                             topic_override=dest_topic_id
                         )
-                        print(f"[GROUP CLONE] Topic {t_id} Msg {mid} result: {res}")
-                        logger.info(f"[GROUP CLONE] Topic {t_id} Msg {mid} result: {res}")
-                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly', 'Skipped']):
+                        if any(k in str(res) for k in ['Done', 'Copied', 'Sent', 'directly']):
                             total_cloned += 1
                             cloned = True
-                    else:
-                        print(f"[GROUP CLONE] Topic {t_id} Msg {mid} not found or empty")
-                        logger.warning(f"[GROUP CLONE] Topic {t_id} Msg {mid} not found or empty")
                 except FloodWait as e:
                     logger.warning(f"FloodWait hit in group clone: sleeping for {e.value + 1}s")
                     await asyncio.sleep(e.value + 1)

@@ -10,7 +10,6 @@ import re
 import cv2
 import logging
 import asyncio
-import random
 from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_DB as MONGO_URI, DB_NAME
@@ -183,22 +182,14 @@ async def get_all_forum_topics(client, chat_id):
     return topics
 
 
-TOPIC_MSG_CACHE = {}
-
-
 async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
     """
     Fetches all message IDs belonging to a specific forum topic.
     Returns message IDs ordered from oldest to newest.
     """
-    global TOPIC_MSG_CACHE
     msg_ids = []
-    c_raw = str(chat_id).replace('-100', '')
-    norm_cid = int(f"-100{c_raw}") if c_raw.isdigit() else chat_id
-
     try:
         from pyrogram.raw.functions.messages import GetReplies
-        from pyrogram.methods.messages.get_messages import utils as gutils
         peer = await client.resolve_peer(chat_id)
         offset_id = 0
         limit = 100
@@ -221,21 +212,10 @@ async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
             if not raw_msgs:
                 break
             
-            # Parse messages into Pyrogram Message objects using client
-            try:
-                parsed_list = await gutils.parse_messages(client, res)
-                for pm in parsed_list:
-                    if pm and not getattr(pm, 'empty', False):
-                        TOPIC_MSG_CACHE[(norm_cid, pm.id)] = pm
-                        if pm.id not in msg_ids:
-                            msg_ids.append(pm.id)
-            except Exception as pe:
-                logger.warning(f"Error parsing topic messages with gutils: {pe}")
-                for rm in raw_msgs:
-                    mid = getattr(rm, 'id', None)
-                    if mid and not getattr(rm, 'empty', False):
-                        if mid not in msg_ids:
-                            msg_ids.append(mid)
+            for rm in raw_msgs:
+                mid = getattr(rm, 'id', None)
+                if mid and not getattr(rm, 'empty', False):
+                    msg_ids.append(mid)
             
             if len(raw_msgs) < limit:
                 break
@@ -253,7 +233,6 @@ async def get_topic_messages_list(client, chat_id, topic_id, max_count=None):
             async for m in client.get_chat_history(chat_id, limit=max_count or 1000):
                 m_tid = getattr(m, 'message_thread_id', None) or getattr(m, 'reply_to_top_message_id', None)
                 if m_tid == topic_id or (topic_id == 1 and m_tid is None):
-                    TOPIC_MSG_CACHE[(norm_cid, m.id)] = m
                     msg_ids.append(m.id)
         except Exception as ex:
             logger.error(f"Fallback get_chat_history error for topic {topic_id}: {ex}")
@@ -638,19 +617,18 @@ def cleanup_stray_temp_files():
                 if fname.endswith(('.session', '.session-journal')) or fname.startswith(('thumb_', 'settings')):
                     continue
                 
-                # 1. Only remove stale temporary/incomplete files older than 3 minutes (active downloads must not be deleted!)
+                # 1. Immediately remove temporary/incomplete files
                 if fname.endswith(('.temp', '.part', '.tmp', '.download')):
                     try:
-                        if now - os.path.getmtime(fpath) > 180:
-                            os.remove(fpath)
+                        os.remove(fpath)
                     except Exception:
                         pass
                     continue
                 
-                # 2. Remove orphan media files older than 2 minutes
+                # 2. Remove orphan media files older than 45 seconds
                 if fname.lower().endswith(('.mp4', '.mkv', '.mp3', '.jpg', '.jpeg', '.pdf', '.bin', '.webp', '.ogg', '.wav', '.flac', '.zip')):
                     try:
-                        if now - os.path.getmtime(fpath) > 120:
+                        if now - os.path.getmtime(fpath) > 45:
                             os.remove(fpath)
                     except Exception:
                         pass
@@ -789,7 +767,7 @@ async def screenshot(video: str, duration: int, sender: str) -> str | None:
         return existing_screenshot
 
     time_stamp = hhmmss(duration // 2)
-    output_file = f"thumb_{sender}_{int(time.time())}_{random.randint(100, 999)}.jpg"
+    output_file = datetime.now().isoformat("_", "seconds") + ".jpg"
 
     cmd = [
         "ffmpeg",

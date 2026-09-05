@@ -3,17 +3,14 @@
 # Licensed under the GNU General Public License v3.0.  
 # See LICENSE file in the repository root for full license text.
 
-import logging
 from datetime import datetime, timedelta
 import psutil
 from shared_client import app
 from pyrogram import filters
-from pyrogram.errors import UserNotParticipant, PeerIdInvalid, ChannelInvalid, ChatAdminRequired, ChannelPrivate
+from pyrogram.errors import UserNotParticipant
 from pyrogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from config import LOG_GROUP, OWNER_ID, FORCE_SUB, JOIN_LINK as JL, ADMIN_CONTACT as AC, FREEMIUM_LIMIT, PREMIUM_LIMIT
 from utils.func import is_premium_user, get_premium_details, get_user_data, users_collection, premium_users_collection
-
-logger = logging.getLogger(__name__)
 
 def get_start_keyboard():
     return InlineKeyboardMarkup([
@@ -147,48 +144,20 @@ async def stats_command(client, message: Message):
     await message.reply_text(text)
 
 async def subscribe(app, message):
-    if not FORCE_SUB:
-        return 0
-    try:
-        user = await app.get_chat_member(FORCE_SUB, message.from_user.id)
-        if str(user.status) in ("ChatMemberStatus.BANNED", "BANNED"):
-            await message.reply_text("You are Banned. Contact -- @RixieHQ")
-            return 1
-        return 0
-    except UserNotParticipant:
+    if FORCE_SUB:
         try:
+          user = await app.get_chat_member(FORCE_SUB, message.from_user.id)
+          if str(user.status) == "ChatMemberStatus.BANNED":
+              await message.reply_text("You are Banned. Contact -- @RixieHQ")
+              return 1
+        except UserNotParticipant:
             link = await app.export_chat_invite_link(FORCE_SUB)
-        except Exception as le:
-            logger.warning(f"[FORCE_SUB] Could not export chat invite link for {FORCE_SUB}: {le}")
-            link = JL if JL else "https://t.me/forcesub123"
-        caption = "Join our channel to use the bot"
-        try:
-            await message.reply_photo(
-                photo="https://graph.org/file/d44f024a08ded19452152.jpg",
-                caption=caption,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Join Now...", url=f"{link}")]])
-            )
-        except Exception:
-            await message.reply_text(
-                caption,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Join Now...", url=f"{link}")]])
-            )
-        return 1
-    except (PeerIdInvalid, ChannelInvalid, ChatAdminRequired, ChannelPrivate) as e:
-        logger.warning(
-            f"[FORCE_SUB CONFIG] Bot cannot access force-sub channel '{FORCE_SUB}': {e}. "
-            f"Please make sure your bot is an ADMINISTRATOR in that channel! "
-            f"Bypassing force-sub check so users are not blocked."
-        )
-        return 0
-    except Exception as ggn:
-        logger.error(f"[FORCE_SUB ERROR] Exception during force-sub check: {ggn}", exc_info=True)
-        err_msg = str(ggn).lower()
-        if any(k in err_msg for k in ["peer id", "channel", "admin", "chat_id", "participant"]):
-            logger.warning(f"[FORCE_SUB] Bypassing force-sub check due to channel/peer access issue: {ggn}")
-            return 0
-        await message.reply_text(f"Something Went Wrong. Contact admins... with following message {ggn}")
-        return 1 
+            caption = f"Join our channel to use the bot"
+            await message.reply_photo(photo="https://graph.org/file/d44f024a08ded19452152.jpg",caption=caption, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Join Now...", url=f"{link}")]]))
+            return 1
+        except Exception as ggn:
+            await message.reply_text(f"Something Went Wrong. Contact admins... with following message {ggn}")
+            return 1 
      
 @app.on_message(filters.command("set"))
 async def set(_, message):

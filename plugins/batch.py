@@ -3,7 +3,7 @@
 # Licensed under the GNU General Public License v3.0.  
 # See LICENSE file in the repository root for full license text.
 
-import os, re, time, asyncio, json, logging
+import os, re, time, asyncio, json, asyncio 
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import UserNotParticipant
@@ -11,8 +11,7 @@ from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMI
 from utils.func import (
     get_user_data, screenshot, thumbnail, get_video_metadata,
     ensure_anonymous_sender, cleanup_stray_temp_files,
-    get_user_data_key, process_text_with_rules, is_premium_user, E,
-    TOPIC_MSG_CACHE, parse_tg_link
+    get_user_data_key, process_text_with_rules, is_premium_user, E
 )
 from shared_client import app as X
 from plugins.settings import rename_file
@@ -20,8 +19,6 @@ from plugins.start import subscribe as sub
 from utils.custom_filters import login_in_progress
 from utils.encrypt import dcs
 from typing import Dict, Any, Optional
-
-logger = logging.getLogger(__name__)
 
 
 Y = None if not STRING else __import__('shared_client').userbot
@@ -97,76 +94,50 @@ PEER_CACHE = {}
 
 async def get_msg(c, u, i, d, lt):
     try:
-        # Normalize chat_id and msg_id
-        c_raw = str(i).replace('-100', '')
-        norm_cid = int(f"-100{c_raw}") if c_raw.isdigit() else i
-        norm_mid = int(d) if str(d).isdigit() else d
-
-        # 1. First check in-memory TOPIC_MSG_CACHE (pre-cached during topic message discovery)
-        cached_msg = TOPIC_MSG_CACHE.get((norm_cid, norm_mid))
-        if cached_msg and not getattr(cached_msg, 'empty', False):
-            return cached_msg
-
         if lt == 'public':
             try:
-                xm = await c.get_messages(i, norm_mid)
+                xm = await c.get_messages(i, d)
                 emp[i] = getattr(xm, "empty", False)
-                if emp[i] and u:
+                if emp[i]:
                     try: await u.join_chat(i)
                     except: pass
-                    chat = await u.get_chat(f"@{i}" if not str(i).startswith('@') else i)
-                    xm = await u.get_messages(chat.id, norm_mid)
-                if xm and not getattr(xm, 'empty', False):
-                    return xm
-                return None
+                    xm = await u.get_messages((await u.get_chat(f"@{i}")).id, d)
+                return xm
             except Exception as e:
-                logger.error(f'Error fetching public message: {e}')
+                print(f'Error fetching public message: {e}')
                 return None
         else:
             if u:
-                # 2. Try direct fetch using normalized integer chat ID
-                try:
-                    xm = await u.get_messages(norm_cid, norm_mid)
-                    if xm and not getattr(xm, 'empty', False):
-                        return xm
-                except Exception:
-                    pass
+                chat_id = i if str(i).startswith('-100') else f'-100{i}' if str(i).isdigit() else i
+                if str(chat_id) in PEER_CACHE:
+                    resolved_id = PEER_CACHE[str(chat_id)]
+                    try:
+                        return await u.get_messages(resolved_id, d)
+                    except Exception:
+                        pass
 
-                # 3. Ensure peer access_hash is initialized in Pyrogram SQLite cache by fetching chat
                 try:
-                    chat = await u.get_chat(norm_cid)
-                    xm = await u.get_messages(chat.id, norm_mid)
-                    if xm and not getattr(xm, 'empty', False):
-                        return xm
+                    peer = await u.resolve_peer(chat_id)
+                    if hasattr(peer, 'channel_id'): resolved_id = f'-100{peer.channel_id}'
+                    elif hasattr(peer, 'chat_id'): resolved_id = f'-{peer.chat_id}'
+                    elif hasattr(peer, 'user_id'): resolved_id = peer.user_id
+                    else: resolved_id = chat_id
+                    PEER_CACHE[str(chat_id)] = resolved_id
+                    return await u.get_messages(resolved_id, d)
                 except Exception:
-                    pass
-
-                # 4. Fallback: Raw MTProto channels.GetMessages with resolved InputPeer
-                try:
-                    from pyrogram.raw.functions.channels import GetMessages as RawGetMessages
-                    from pyrogram.raw.types import InputMessageID
-                    from pyrogram.methods.messages.get_messages import utils as gutils
-                    peer = await u.resolve_peer(norm_cid)
-                    res = await u.invoke(RawGetMessages(channel=peer, id=[InputMessageID(id=norm_mid)]))
-                    parsed = await gutils.parse_messages(u, res)
-                    if parsed and len(parsed) > 0 and not getattr(parsed[0], 'empty', False):
-                        return parsed[0]
-                except Exception:
-                    pass
-
-                # 5. Last resort: Update dialogs and retry
-                try:
-                    await upd_dlg(u)
-                    xm = await u.get_messages(norm_cid, norm_mid)
-                    if xm and not getattr(xm, 'empty', False):
-                        return xm
-                except Exception:
-                    pass
-
-                return None
+                    try:
+                        chat = await u.get_chat(chat_id)
+                        PEER_CACHE[str(chat_id)] = chat.id
+                        return await u.get_messages(chat.id, d)
+                    except Exception:
+                        await upd_dlg(u)
+                        try:
+                            return await u.get_messages(chat_id, d)
+                        except Exception:
+                            return None
             return None
     except Exception as e:
-        logger.error(f'Error fetching message {d}: {e}')
+        print(f'Error fetching message: {e}')
         return None
 
 async def get_ubot(uid):
@@ -236,14 +207,7 @@ async def prog(c, t, C, h, m, st):
         bar = '🟢' * int(pct / 10) + '🔴' * (10 - int(pct / 10))
         elapsed = now - st
         speed = c / elapsed / (1024 * 1024) if elapsed > 0 else 0
-        try:
-            remaining_bytes = max(0, t - c)
-            speed_bytes = speed * 1024 * 1024
-            rem_secs = int(remaining_bytes / speed_bytes) if speed_bytes > 0 else 0
-            rem_secs = min(max(0, rem_secs), 86400)
-            eta = time.strftime('%M:%S', time.gmtime(rem_secs))
-        except Exception:
-            eta = '00:00'
+        eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
         
         text = (
             f"__**Pyro Handler...**__\n\n"
@@ -313,8 +277,6 @@ async def send_direct(client_to_use, m, tcid, ft=None, rtmid=None):
         return False
 
 async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_override=None):
-    if not m or getattr(m, 'empty', False):
-        return 'Failed: Message is empty or not found.'
     f = None
     th = None
     p = None
@@ -337,9 +299,18 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
             rtmid = topic_override
         
         # Determine uploader client:
-        # Prioritize custom bot 'c' (configured via /setbot) to keep main bot hidden.
-        # Fallback to user client 'u' if custom bot is not available.
-        uploader = c if c else u
+        # When uploading to a target chat ID (group/channel), use user client 'u' (uc)
+        # with anonymous admin rights so that the message appears as sent by the group
+        # itself with the group's profile photo and title (owner mode).
+        is_chat = is_chat_target(tcid, d)
+        if is_chat and u:
+            uploader = u
+            try:
+                await ensure_anonymous_sender(u, tcid)
+            except Exception as e_anon:
+                print(f"Notice: ensure_anonymous_sender in {tcid}: {e_anon}")
+        else:
+            uploader = c if c else u
         
         if m.media:
             orig_text = m.caption.markdown if m.caption else ''
@@ -378,25 +349,18 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 file_name = f"{time.time()}.jpg"
                 c_name = sanitize(file_name)
     
-            dl_err_str = None
-            try:
-                f = await u.download_media(
-                    m,
-                    file_name=c_name,
-                    progress=prog if p else None,
-                    progress_args=(prog_client, d, p.id, st) if p else None
-                )
-            except Exception as dl_err:
-                dl_err_str = str(dl_err)
-                print(f"[DOWNLOAD ERROR] Msg {getattr(m, 'id', 'unknown')}: {dl_err}")
-
+            f = await u.download_media(
+                m,
+                file_name=c_name,
+                progress=prog if p else None,
+                progress_args=(prog_client, d, p.id, st) if p else None
+            )
+            
             if not f or not os.path.exists(f):
-                err_text = f"Download failed: {dl_err_str[:30]}" if dl_err_str else "Download failed."
-                print(f"[DOWNLOAD] File {c_name} not available: {err_text}")
                 if p:
-                    try: await prog_client.edit_message_text(d, p.id, err_text)
+                    try: await prog_client.edit_message_text(d, p.id, 'Failed.')
                     except: pass
-                return err_text
+                return 'Failed.'
             
             if p:
                 try: await prog_client.edit_message_text(d, p.id, 'Renaming...')
@@ -428,11 +392,10 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                             'voice': Y.send_voice, 'audio': Y.send_audio, 
                             'photo': Y.send_photo, 'document': Y.send_document}
                 
-                target_chat = LOG_GROUP if LOG_GROUP else tcid
                 for mtype, func in send_funcs.items():
                     if f.endswith('.mp4'): mtype = 'video'
                     if getattr(m, mtype, None):
-                        sent = await func(target_chat, f, thumb=th if mtype == 'video' else None, 
+                        sent = await func(LOG_GROUP, f, thumb=th if mtype == 'video' else None, 
                                         duration=dur if mtype == 'video' else None,
                                         height=h if mtype == 'video' else None,
                                         width=w if mtype == 'video' else None,
@@ -441,32 +404,31 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                                         progress_args=(prog_client, d, p.id, st) if p else None)
                         break
                 else:
-                    sent = await Y.send_document(target_chat, f, thumb=th, caption=ft if m.caption else None,
+                    sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
                                                 progress=prog if p else None,
                                                 progress_args=(prog_client, d, p.id, st) if p else None)
                 
-                if target_chat == LOG_GROUP and LOG_GROUP != tcid:
-                    copied = False
+                copied = False
+                try:
+                    await uploader.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                    copied = True
+                except Exception:
                     try:
-                        await uploader.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                        await uploader.copy_message(tcid, LOG_GROUP, sent.id)
                         copied = True
                     except Exception:
-                        try:
-                            await uploader.copy_message(tcid, LOG_GROUP, sent.id)
-                            copied = True
-                        except Exception:
-                            if uploader != c and c:
+                        if uploader != c and c:
+                            try:
+                                await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                                copied = True
+                            except Exception:
                                 try:
-                                    await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+                                    await c.copy_message(tcid, LOG_GROUP, sent.id)
                                     copied = True
-                                except Exception:
-                                    try:
-                                        await c.copy_message(tcid, LOG_GROUP, sent.id)
-                                        copied = True
-                                    except Exception as copy_err:
-                                        return f'Large file copy failed: {str(copy_err)[:35]}'
-                    if not copied:
-                        return 'Large file copy failed.'
+                                except Exception as copy_err:
+                                    return f'Large file copy failed: {str(copy_err)[:35]}'
+                if not copied:
+                    return 'Large file copy failed.'
                 if p:
                     try: await prog_client.delete_messages(d, p.id)
                     except: pass
@@ -479,40 +441,18 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
 
             async def do_upload(client_to_use, reply_id=rtmid):
                 try:
-                    safe_cap = ft[:1020] if ft else None
-                    if m.video or os.path.splitext(f)[1].lower() in ['.mp4', '.mkv', '.mov', '.avi', '.webm']:
+                    if m.video or os.path.splitext(f)[1].lower() == '.mp4':
                         mtd = await get_video_metadata(f)
-                        dur = mtd.get('duration') if mtd.get('duration', 0) > 0 else (getattr(m.video, 'duration', None) if m.video else None)
-                        h = mtd.get('height') if mtd.get('height', 0) > 1 else (getattr(m.video, 'height', None) if m.video else None)
-                        w = mtd.get('width') if mtd.get('width', 0) > 1 else (getattr(m.video, 'width', None) if m.video else None)
-                        
-                        gen_th = None
-                        try:
-                            gen_th = await screenshot(f, dur or 2, d)
-                        except Exception:
-                            pass
-                        
-                        th_use = gen_th if (gen_th and os.path.isfile(gen_th) and os.path.getsize(gen_th) > 0) else None
-                        if not th_use and user_thumb and os.path.isfile(user_thumb) and os.path.getsize(user_thumb) > 0:
-                            th_use = user_thumb
-
-                        try:
-                            await client_to_use.send_video(
-                                tcid, video=f, caption=safe_cap, 
-                                thumb=th_use, width=w, height=h, duration=dur, 
-                                progress=prog if p else None,
-                                progress_args=(prog_client, d, p.id, st) if p else None, 
-                                reply_to_message_id=reply_id
-                            )
-                        except Exception as sv_err:
-                            logger.warning(f"send_video error ({sv_err}), falling back to send_document...")
-                            await client_to_use.send_document(
-                                tcid, document=f, caption=safe_cap,
-                                thumb=th_use,
-                                progress=prog if p else None,
-                                progress_args=(prog_client, d, p.id, st) if p else None,
-                                reply_to_message_id=reply_id
-                            )
+                        dur, h, w = mtd['duration'], mtd['width'], mtd['height']
+                        gen_th = await screenshot(f, dur, d)
+                        th_use = gen_th if gen_th != user_thumb else user_thumb
+                        await client_to_use.send_video(
+                            tcid, video=f, caption=ft if m.caption else None, 
+                            thumb=th_use, width=w, height=h, duration=dur, 
+                            progress=prog if p else None,
+                            progress_args=(prog_client, d, p.id, st) if p else None, 
+                            reply_to_message_id=reply_id
+                        )
                     elif m.video_note:
                         await client_to_use.send_video_note(
                             tcid, video_note=f,
@@ -562,20 +502,19 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                     try: os.remove(f)
                     except Exception: pass
             except Exception as upload_err:
-                alt_uploader = u if uploader == c else c
-                if alt_uploader:
+                if uploader != c and c:
                     try:
-                        print(f"Upload via {uploader} failed: {upload_err}, falling back to alternative client...")
-                        await do_upload(alt_uploader)
+                        print(f"Upload via user client failed: {upload_err}, falling back to custom bot...")
+                        await do_upload(c)
                         if f and os.path.exists(f):
                             try: os.remove(f)
                             except Exception: pass
-                    except Exception as fb_err:
-                        print(f"Upload fallback failed: {fb_err}")
+                    except Exception as bot_err:
+                        print(f"Upload fallback failed: {bot_err}")
                         if p:
-                            try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(fb_err)[:35]}')
+                            try: await prog_client.edit_message_text(d, p.id, f'Upload failed: {str(bot_err)[:35]}')
                             except: pass
-                        return f'Failed: {str(fb_err)[:35]}'
+                        return f'Failed: {str(bot_err)[:35]}'
                 else:
                     print(f"Upload failed: {upload_err}")
                     if p:
@@ -598,22 +537,18 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                         return 'Sent.'
                     except Exception:
                         pass
-                alt_client = u if uploader == c else c
-                if alt_client:
+                if uploader != c and c:
                     try:
-                        await alt_client.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
+                        await c.send_message(tcid, text=m.text.markdown, reply_to_message_id=rtmid)
                         return 'Sent.'
                     except Exception as fb_err:
                         return f'Failed: {str(fb_err)[:35]}'
                 return f'Failed: {str(text_err)[:35]}'
-        elif getattr(m, 'service', False) or getattr(m, 'action', None):
-            return 'Skipped (service/topic action).'
-        else:
-            return 'Skipped (unsupported message type).'
+            return 'Sent.'
     except Exception as e:
         return f'Error: {str(e)[:50]}'
     finally:
-        # GUARANTEED IMMEDIATE CLEANUP OF LOCAL FILE AND GENERATED THUMBNAIL
+        # GUARANTEED IMMEDIATE CLEANUP OF LOCAL FILE, TEMPS, AND GENERATED THUMBNAIL
         if f and os.path.exists(f):
             try:
                 os.remove(f)
@@ -625,6 +560,20 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
                 os.remove(th)
             except Exception:
                 pass
+        # Also clean up any matching .temp files for c_name
+        try:
+            if 'c_name' in locals() and c_name:
+                for base_dir in [".", "downloads"]:
+                    temp_f = os.path.join(base_dir, f"{c_name}.temp")
+                    if os.path.exists(temp_f):
+                        try: os.remove(temp_f)
+                        except Exception: pass
+                    orig_f = os.path.join(base_dir, c_name)
+                    if os.path.exists(orig_f):
+                        try: os.remove(orig_f)
+                        except Exception: pass
+        except Exception:
+            pass
         cleanup_stray_temp_files()
         import gc
         gc.collect()
@@ -713,32 +662,11 @@ async def text_handler(c, m):
 
     elif s == 'start_single':
         L = m.text
-        parsed_c, parsed_t, parsed_m, parsed_lt = parse_tg_link(L)
         i, d, lt = E(L)
         if not i or not d:
             await m.reply_text('Invalid link format.')
             Z.pop(uid, None)
             return
-
-        # Check if user sent a topic-only link (2 parts in forum)
-        if parsed_t is not None and parsed_m is None:
-            uc_check = await get_uclient(uid)
-            if uc_check:
-                try:
-                    c_raw = str(i).replace('-100', '')
-                    norm_cid = int(f"-100{c_raw}") if c_raw.isdigit() else i
-                    chat_info = await uc_check.get_chat(norm_cid)
-                    if getattr(chat_info, 'is_forum', False):
-                        await m.reply_text(
-                            f"📌 **Forum Topic Link Detected!** (`Topic ID: {parsed_t}`)\n\n"
-                            f"Yeh poore topic ka link hai, kisi akele video ka nahi.\n\n"
-                            f"• **Poora Topic Clone karne ke liye:** `/clone` command use karein aur ye link bhejein.\n"
-                            f"• **Kisi 1 Video ko download karne ke liye:** Topic ke andar us video par tap/right-click karke **Copy Link** karein aur bhejein!"
-                        )
-                        Z.pop(uid, None)
-                        return
-                except Exception:
-                    pass
 
         Z[uid].update({'step': 'process_single', 'cid': i, 'sid': d, 'lt': lt})
         i, s, lt = Z[uid]['cid'], Z[uid]['sid'], Z[uid]['lt']
@@ -769,17 +697,10 @@ async def text_handler(c, m):
         try:
             msg = await get_msg(ubot, uc, i, s, lt)
             if msg:
-                if getattr(msg, 'service', False) or getattr(msg, 'action', None):
-                    await pt.edit(
-                        f"⚠️ **Service / Action Message!** (Msg ID: `{s}`)\n\n"
-                        f"Yeh message ek system event hai (e.g. Topic Creation / Pin action), isme koi video ya file nahi hai.\n"
-                        f"Topic ke andar maujood video ka link bhejein!"
-                    )
-                else:
-                    res = await process_msg(ubot, uc, msg, str(m.chat.id), lt, uid, i)
-                    await pt.edit(f'1/1: {res}')
+                res = await process_msg(ubot, uc, msg, str(m.chat.id), lt, uid, i)
+                await pt.edit(f'1/1: {res}')
             else:
-                await pt.edit('❌ Message not found or empty (Ensure your logged-in account has joined this channel/group).')
+                await pt.edit('Message not found')
         except Exception as e:
             await pt.edit(f'Error: {str(e)[:50]}')
         finally:
