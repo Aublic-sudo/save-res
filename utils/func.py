@@ -10,6 +10,7 @@ import re
 import cv2
 import logging
 import asyncio
+import random
 from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_DB as MONGO_URI, DB_NAME
@@ -768,7 +769,7 @@ async def screenshot(video: str, duration: int, sender: str) -> str | None:
         return existing_screenshot
 
     time_stamp = hhmmss(duration // 2)
-    output_file = datetime.now().isoformat("_", "seconds") + ".jpg"
+    output_file = f"thumb_{sender}_{int(time.time())}_{random.randint(100, 999)}.jpg"
 
     cmd = [
         "ffmpeg",

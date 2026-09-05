@@ -245,16 +245,19 @@ async def handle_link_flow(c: Client, m: Message, link_text: str, status_msg: Me
         state['topic_title'] = f"Topic #{topic_id}"
 
         btn_rows = []
-        if msg_id is not None and msg_ids:
-            if msg_id in msg_ids:
+        if msg_id is not None:
+            if msg_ids and msg_id in msg_ids:
                 s_idx = msg_ids.index(msg_id)
                 r_msgs = msg_ids[s_idx:]
-            else:
+            elif msg_ids:
                 r_msgs = [m for m in msg_ids if m >= msg_id]
-            if r_msgs:
-                btn_rows.append([
-                    InlineKeyboardButton(f"▶️ Resume from Msg #{msg_id} ({len(r_msgs)})", callback_data=f"clone_start_from_{msg_id}")
-                ])
+                if not r_msgs:
+                    r_msgs = [msg_id]
+            else:
+                r_msgs = [msg_id]
+            btn_rows.append([
+                InlineKeyboardButton(f"▶️ Resume from Msg #{msg_id} ({len(r_msgs)})", callback_data=f"clone_start_from_{msg_id}")
+            ])
 
         btn_rows.append([
             InlineKeyboardButton(f"▶️ Start from Beginning ({len(msg_ids)})", callback_data="clone_start_topic")
@@ -411,6 +414,13 @@ async def auto_link_handler(c: Client, m: Message):
     if uid in Z:
         return
 
+    # If user is in an active clone step (e.g. sent resume link), pass directly to clone_text_handler!
+    if uid in CLONE_STATE:
+        state = CLONE_STATE[uid]
+        step = state.get('step')
+        if step in ('waiting_skip_count', 'waiting_topic_number', 'waiting_ignore_topics'):
+            return await clone_text_handler(c, m)
+
     if is_user_active(uid):
         await m.reply_text("⚠️ You already have an active task running. Use `/stop` to cancel it.")
         return
@@ -537,16 +547,10 @@ async def clone_text_handler(c: Client, m: Message):
             else:
                 # Filter all messages >= target_mid
                 remaining_msgs = [mid for mid in all_msg_ids if mid >= target_mid]
+                if not remaining_msgs:
+                    remaining_msgs = [target_mid]
             
-            if not remaining_msgs:
-                await m.reply_text(
-                    f"❌ **Message not found in this topic!**\n\n"
-                    f"Message ID `{target_mid}` is higher than the latest message in this topic (`{max(all_msg_ids)}`).\n"
-                    f"Please check your link and try again."
-                )
-                return
-            
-            skipped_count = len(all_msg_ids) - len(remaining_msgs)
+            skipped_count = max(0, len(all_msg_ids) - len(remaining_msgs))
             start_label = f"Message ID `{remaining_msgs[0]}`"
             skipped_label = f"`{skipped_count}` messages"
 
@@ -864,6 +868,8 @@ async def clone_callback_handler(c: Client, cb: CallbackQuery):
             state['msg_ids'] = all_msgs[s_idx:]
         else:
             state['msg_ids'] = [m for m in all_msgs if m >= mid]
+            if not state['msg_ids']:
+                state['msg_ids'] = [mid]
 
         await cb.answer(f"Resuming from message #{mid}...")
         topic_id = state.get('topic_id')

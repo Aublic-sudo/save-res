@@ -448,18 +448,40 @@ async def process_msg(c, u, m, d, lt, uid, i, target_override=None, topic_overri
 
             async def do_upload(client_to_use, reply_id=rtmid):
                 try:
-                    if m.video or os.path.splitext(f)[1].lower() == '.mp4':
+                    safe_cap = ft[:1020] if ft else None
+                    if m.video or os.path.splitext(f)[1].lower() in ['.mp4', '.mkv', '.mov', '.avi', '.webm']:
                         mtd = await get_video_metadata(f)
-                        dur, h, w = mtd['duration'], mtd['width'], mtd['height']
-                        gen_th = await screenshot(f, dur, d)
-                        th_use = gen_th if gen_th != user_thumb else user_thumb
-                        await client_to_use.send_video(
-                            tcid, video=f, caption=ft if m.caption else None, 
-                            thumb=th_use, width=w, height=h, duration=dur, 
-                            progress=prog if p else None,
-                            progress_args=(prog_client, d, p.id, st) if p else None, 
-                            reply_to_message_id=reply_id
-                        )
+                        dur = mtd.get('duration') if mtd.get('duration', 0) > 0 else (getattr(m.video, 'duration', None) if m.video else None)
+                        h = mtd.get('height') if mtd.get('height', 0) > 1 else (getattr(m.video, 'height', None) if m.video else None)
+                        w = mtd.get('width') if mtd.get('width', 0) > 1 else (getattr(m.video, 'width', None) if m.video else None)
+                        
+                        gen_th = None
+                        try:
+                            gen_th = await screenshot(f, dur or 2, d)
+                        except Exception:
+                            pass
+                        
+                        th_use = gen_th if (gen_th and os.path.isfile(gen_th) and os.path.getsize(gen_th) > 0) else None
+                        if not th_use and user_thumb and os.path.isfile(user_thumb) and os.path.getsize(user_thumb) > 0:
+                            th_use = user_thumb
+
+                        try:
+                            await client_to_use.send_video(
+                                tcid, video=f, caption=safe_cap, 
+                                thumb=th_use, width=w, height=h, duration=dur, 
+                                progress=prog if p else None,
+                                progress_args=(prog_client, d, p.id, st) if p else None, 
+                                reply_to_message_id=reply_id
+                            )
+                        except Exception as sv_err:
+                            logger.warning(f"send_video error ({sv_err}), falling back to send_document...")
+                            await client_to_use.send_document(
+                                tcid, document=f, caption=safe_cap,
+                                thumb=th_use,
+                                progress=prog if p else None,
+                                progress_args=(prog_client, d, p.id, st) if p else None,
+                                reply_to_message_id=reply_id
+                            )
                     elif m.video_note:
                         await client_to_use.send_video_note(
                             tcid, video_note=f,
